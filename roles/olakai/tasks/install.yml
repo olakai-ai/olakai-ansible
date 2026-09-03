@@ -69,10 +69,10 @@
     # get.sh must run as root (it prepares the OS, then hands off to the
     # bundle's install.sh). The play already runs with become: true.
     # CI=true makes get.sh strictly non-interactive even if a tty leaks in.
-    # NOTE: `--runtime=` is not a get.sh flag yet (installer stage S4). Under
-    # podman-rootless the OS is prepared and get.sh runs against the
-    # podman-docker shim. Pass the flag via olakai_get_sh_extra_args once
-    # the installer ships it.
+    # NOTE: `--runtime=` is not a get.sh flag yet (rootless Podman support in
+    # the Olakai installer is in progress). Under podman-rootless the OS is
+    # prepared and get.sh runs against the podman-docker shim. Pass the flag
+    # via olakai_get_sh_extra_args once the installer ships it.
     # failed_when: false keeps the play alive on a non-zero exit so the tasks
     # below can report a redacted reason instead of a censored no_log result.
     - name: Run get.sh (output hidden, the license key is in its environment)  # noqa: no-changed-when

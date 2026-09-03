@@ -88,7 +88,7 @@ olakai_accept_data_loss: false
 olakai_manage_firewall: true
 
 # podman-rootless only. Value for net.ipv4.ip_unprivileged_port_start so the
-# unprivileged service user can bind Caddy on 80 and 443 (D-007). Set to 1024
+# unprivileged service user can bind Caddy on 80 and 443. Set to 1024
 # to leave the kernel default alone, for example behind a load balancer with
 # olakai_no_tls: true.
 olakai_unprivileged_port_start: 80

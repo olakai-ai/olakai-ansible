@@ -2,16 +2,17 @@
 # Rootless Podman runtime: prepare the OS so an unprivileged service user can
 # run the Olakai compose stack with Podman.
 #
-# What this file sets up (mirrors stage S4 of the Claritev plan):
+# What this file sets up:
 #   1. podman + podman-docker (the `docker` CLI shim) + a standalone Docker
 #      Compose v2 binary that `podman compose` delegates to.
 #   2. A system service user with subordinate uid/gid ranges and systemd
 #      linger, so its user units survive logout and reboot.
-#   3. net.ipv4.ip_unprivileged_port_start so Caddy can bind 80/443 (D-007).
+#   3. net.ipv4.ip_unprivileged_port_start so Caddy can bind 80/443.
 #   4. User-scope podman.socket and podman-restart.service.
 #   5. The install directory, owned by the service user.
 #
-# NOTE: `get.sh --runtime=` does not exist yet (installer stage S4 adds it).
+# NOTE: `get.sh --runtime=` does not exist yet (rootless Podman support in
+# the Olakai installer is in progress).
 # Until then install.yml runs get.sh as root with the podman-docker shim in
 # place, which brings the stack up under rootful Podman. Once the installer
 # ships --runtime=, add it through olakai_get_sh_extra_args and the same OS
