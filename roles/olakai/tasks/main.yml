@@ -1,0 +1,48 @@
+---
+# Entry point. Dispatches on olakai_action.
+#
+# install: preflight -> runtime prep -> firewall -> get.sh
+# upgrade: preflight -> upgrade.sh
+#
+# The role never re-implements what get.sh and upgrade.sh do (license
+# handshake, bundle download, sha256 + cosign verification, .env, compose
+# bring-up). It prepares the OS and runs the signed scripts.
+
+- name: Validate olakai_action
+  ansible.builtin.assert:
+    that:
+      - olakai_action in ['install', 'upgrade']
+    fail_msg: "olakai_action must be 'install' or 'upgrade' (got '{{ olakai_action }}')."
+
+- name: Load OS family variables
+  ansible.builtin.include_vars: "{{ ansible_os_family }}.yml"
+  when: ansible_os_family in ['Debian', 'RedHat']
+
+- name: Preflight checks
+  ansible.builtin.import_tasks: preflight.yml
+
+- name: Prepare Docker runtime
+  ansible.builtin.include_tasks: runtime_docker.yml
+  when:
+    - olakai_action == 'install'
+    - olakai_runtime_resolved == 'docker'
+
+- name: Prepare rootless Podman runtime
+  ansible.builtin.include_tasks: runtime_podman_rootless.yml
+  when:
+    - olakai_action == 'install'
+    - olakai_runtime_resolved == 'podman-rootless'
+
+- name: Open firewall ports
+  ansible.builtin.include_tasks: firewall.yml
+  when:
+    - olakai_action == 'install'
+    - olakai_manage_firewall | bool
+
+- name: Install Olakai
+  ansible.builtin.include_tasks: install.yml
+  when: olakai_action == 'install'
+
+- name: Upgrade Olakai
+  ansible.builtin.include_tasks: upgrade.yml
+  when: olakai_action == 'upgrade'

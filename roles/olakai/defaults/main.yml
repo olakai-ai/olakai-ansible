@@ -1,0 +1,106 @@
+---
+# Defaults for the olakai role. Override them in group_vars/olakai.yml.
+# Every variable is documented here. The playbooks set olakai_action.
+
+# What to do: "install" (fresh install via get.sh) or "upgrade" (upgrade.sh).
+olakai_action: install
+
+# Required. Public DNS name that resolves to the host. Becomes the app URL and
+# AUTH_URL. Maps to get.sh --domain=.
+olakai_domain: ""
+
+# Required. First admin user. Receives the magic-link login e-mail.
+# Maps to get.sh --admin-email=.
+olakai_admin_email: ""
+
+# Required for install. Single-use license key from Olakai sales. Store it in
+# Ansible Vault. The role passes it to get.sh through the OLAKAI_LICENSE_KEY
+# environment variable (never on the command line) and runs that task with
+# no_log so it is never written to Ansible output or logs.
+olakai_license_key: ""
+
+# Where the bundle is extracted. Maps to get.sh --install-dir= and
+# upgrade.sh --install-dir=.
+olakai_install_dir: /opt/olakai-onprem
+
+# Bundle version. Empty = latest servable release.
+# install: passes --version=<value> to get.sh when set.
+# upgrade: passes --to=<value> to upgrade.sh, or --to=latest when empty.
+olakai_version: ""
+
+# Container runtime: "auto", "docker" or "podman-rootless".
+# auto resolves to docker on the Debian family (Ubuntu, Debian) and on
+# Amazon Linux, and to podman-rootless on the RedHat family (RHEL, Rocky,
+# AlmaLinux, CentOS Stream, Oracle Linux).
+olakai_runtime: auto
+
+# podman-rootless only. Unprivileged system user that owns the Podman storage
+# and the install directory. get.sh / upgrade.sh run as this user once the
+# installer supports --runtime= (see README "Runtime choice").
+olakai_service_user: olakai
+
+# podman-rootless only. Start of the 65536-wide subordinate uid/gid range for
+# the service user. Change it if another rootless user already owns this range
+# in /etc/subuid or /etc/subgid.
+olakai_subid_start: 100000
+
+# Skip Caddy and Let's Encrypt. Use when TLS terminates upstream.
+# Maps to get.sh --no-tls.
+olakai_no_tls: false
+
+# Skip ALL cosign verification (bundle and images). Air-gapped escape hatch
+# only. Maps to get.sh --skip-verify and upgrade.sh --skip-verify.
+olakai_skip_verify: false
+
+# Also verify each container image with cosign at install (strict mode).
+# Maps to get.sh --verify-images.
+olakai_verify_images: false
+
+# Path on the host to an offline cosign bundle for verification.
+# Empty = online Rekor. Maps to get.sh --rekor-bundle=.
+olakai_rekor_bundle: ""
+
+# Proceed when the install directory is not empty (existing .env is kept).
+# Maps to get.sh --force-overlay. Needs get.sh >= 2026.09 (see README
+# "Compatibility"). The role does not run get.sh at all when
+# <olakai_install_dir>/.env already exists, so this only matters for a
+# directory that has files but no .env.
+olakai_force_overlay: false
+
+# Upgrade only. Accept a release that applies a destructive migration.
+# Maps to upgrade.sh --accept-data-loss. upgrade.sh refuses such a release
+# without it, on purpose, even with --yes.
+olakai_accept_data_loss: false
+
+# Open TCP 80 and 443 in firewalld (RedHat family) or ufw (Debian family) when
+# one of them is installed. Set to false if you manage the host firewall
+# elsewhere. Cloud security groups are always your job.
+olakai_manage_firewall: true
+
+# podman-rootless only. Value for net.ipv4.ip_unprivileged_port_start so the
+# unprivileged service user can bind Caddy on 80 and 443 (D-007). Set to 1024
+# to leave the kernel default alone, for example behind a load balancer with
+# olakai_no_tls: true.
+olakai_unprivileged_port_start: 80
+
+# Where to download the installer from.
+olakai_get_sh_url: https://get.olakai.ai/get.sh
+
+# SHA256 of get.sh. Empty = do not pin. Pinning is recommended once Olakai
+# publishes checksums for get.sh releases; put the value here and the download
+# fails on any mismatch.
+olakai_get_sh_sha256: ""
+
+# Docker runtime only. Install Docker Engine with the get.docker.com script
+# when the docker binary is missing (Amazon Linux uses the distro package).
+# When false the role fails early with manual-install instructions. Also
+# passes --auto-install-docker to get.sh as a fallback.
+olakai_auto_install_docker: true
+
+# Extra arguments appended to the get.sh command line. Use it for flags this
+# role version does not know yet, for example ["--runtime=podman-rootless"]
+# once the installer ships it.
+olakai_get_sh_extra_args: []
+
+# Extra arguments appended to the upgrade.sh command line.
+olakai_upgrade_sh_extra_args: []

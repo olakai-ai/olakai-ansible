@@ -1,0 +1,104 @@
+---
+# Preflight: fail early, with a clear message, before anything is changed.
+# get.sh repeats most of these checks. The role checks them first so the
+# failure is reported by Ansible with a pointer to the support matrix.
+
+- name: Assert the host is Linux on a supported CPU architecture
+  ansible.builtin.assert:
+    that:
+      - ansible_system == 'Linux'
+      - ansible_architecture in ['x86_64', 'aarch64']
+    fail_msg: >-
+      Olakai on-prem needs Linux on x86_64 or aarch64
+      (got {{ ansible_system }} / {{ ansible_architecture }}).
+      See the platform support matrix linked from the README.
+
+- name: Assert the host has enough memory
+  ansible.builtin.assert:
+    that:
+      - ansible_memtotal_mb | int >= olakai_min_memtotal_mb
+    fail_msg: >-
+      Olakai on-prem needs an 8 GB VM. This host reports
+      {{ ansible_memtotal_mb }} MB usable (minimum {{ olakai_min_memtotal_mb }} MB).
+
+- name: Assert the distribution is in the support matrix
+  ansible.builtin.assert:
+    that:
+      - ansible_distribution in olakai_supported_distros
+      - >-
+        ansible_distribution == 'Ubuntu'
+        or ansible_distribution == 'Amazon'
+        or (ansible_distribution_major_version | int
+            >= olakai_supported_distros[ansible_distribution] | int)
+      - >-
+        ansible_distribution != 'Ubuntu'
+        or ansible_distribution_version is version(olakai_supported_distros['Ubuntu'], '>=')
+      - >-
+        ansible_distribution != 'Amazon'
+        or ansible_distribution_major_version == olakai_supported_distros['Amazon']
+    fail_msg: >-
+      {{ ansible_distribution }} {{ ansible_distribution_version }} is not in the
+      Olakai platform support matrix. Supported: {{ olakai_supported_distros_human }}.
+      See the platform support matrix linked from the README.
+
+- name: Check that python3 is on PATH (get.sh parses the handshake with it)
+  ansible.builtin.command:
+    cmd: python3 --version
+  register: olakai_python3_check
+  changed_when: false
+  failed_when: false
+
+- name: Assert python3 is available
+  ansible.builtin.assert:
+    that:
+      - olakai_python3_check.rc == 0
+    fail_msg: >-
+      python3 is not on PATH. get.sh needs it to parse the license handshake.
+      Install it with the distro package manager (python3) and re-run.
+
+- name: Resolve olakai_runtime from auto
+  ansible.builtin.set_fact:
+    olakai_runtime_resolved: >-
+      {{
+        olakai_runtime if olakai_runtime != 'auto'
+        else ('docker' if (ansible_os_family == 'Debian' or ansible_distribution == 'Amazon')
+              else 'podman-rootless')
+      }}
+
+- name: Assert the resolved runtime is valid
+  ansible.builtin.assert:
+    that:
+      - olakai_runtime_resolved in ['docker', 'podman-rootless']
+    fail_msg: >-
+      olakai_runtime must be 'auto', 'docker' or 'podman-rootless'
+      (got '{{ olakai_runtime }}').
+
+- name: Assert required inputs are set
+  ansible.builtin.assert:
+    that:
+      - olakai_domain | length > 0
+      - olakai_admin_email | length > 0
+      - olakai_install_dir | length > 0
+    fail_msg: >-
+      olakai_domain, olakai_admin_email and olakai_install_dir are required.
+      Set them in group_vars/olakai.yml.
+
+- name: Assert the license key is set (install only)
+  ansible.builtin.assert:
+    that:
+      - olakai_license_key | length > 0
+    fail_msg: >-
+      olakai_license_key is empty. Put the license key from Olakai sales in
+      Ansible Vault and set olakai_license_key in group_vars/olakai.yml.
+    quiet: true
+  when: olakai_action == 'install'
+
+- name: Show the resolved plan
+  ansible.builtin.debug:
+    msg:
+      - "action: {{ olakai_action }}"
+      - "host: {{ ansible_distribution }} {{ ansible_distribution_version }} ({{ ansible_architecture }})"
+      - "runtime: {{ olakai_runtime_resolved }}"
+      - "domain: {{ olakai_domain }}"
+      - "install_dir: {{ olakai_install_dir }}"
+      - "version: {{ olakai_version if olakai_version else 'latest' }}"

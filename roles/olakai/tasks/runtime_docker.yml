@@ -1,0 +1,90 @@
+---
+# Docker runtime: make sure Docker Engine + Compose v2 are present and running.
+# get.sh checks this again and can install Docker itself with
+# --auto-install-docker. The role does it first so the step is idempotent and
+# visible in the Ansible output.
+
+- name: Check whether the docker binary exists
+  ansible.builtin.stat:
+    path: "{{ olakai_docker_binary_path }}"
+  register: olakai_docker_stat
+
+- name: Fail when Docker is missing and auto-install is disabled
+  ansible.builtin.fail:
+    msg: >-
+      Docker is not installed and olakai_auto_install_docker is false.
+      Install Docker Engine 24+ with Compose v2 from the signed repos
+      (https://docs.docker.com/engine/install/) or set
+      olakai_auto_install_docker: true.
+  when:
+    - not olakai_docker_stat.stat.exists
+    - not olakai_auto_install_docker | bool
+
+# get.docker.com does not support Amazon Linux; use the distro package there.
+- name: Install Docker from the distro package (Amazon Linux)
+  ansible.builtin.dnf:
+    name: docker
+    state: present
+  when:
+    - not olakai_docker_stat.stat.exists
+    - ansible_distribution == 'Amazon'
+
+- name: Install Docker with the get.docker.com script
+  when:
+    - not olakai_docker_stat.stat.exists
+    - ansible_distribution != 'Amazon'
+  block:
+    - name: Download the get.docker.com script
+      ansible.builtin.get_url:
+        url: https://get.docker.com
+        dest: "{{ olakai_docker_get_tmp_path }}"
+        mode: "0700"
+
+    - name: Run the get.docker.com script
+      ansible.builtin.command:
+        cmd: "sh {{ olakai_docker_get_tmp_path }}"
+        creates: "{{ olakai_docker_binary_path }}"
+  always:
+    - name: Remove the get.docker.com script
+      ansible.builtin.file:
+        path: "{{ olakai_docker_get_tmp_path }}"
+        state: absent
+
+# Amazon Linux ships no compose plugin. Install the standalone binary as a CLI
+# plugin so `docker compose` works.
+- name: Install the Docker Compose CLI plugin (Amazon Linux)
+  when: ansible_distribution == 'Amazon'
+  block:
+    - name: Create the Docker CLI plugin directory
+      ansible.builtin.file:
+        path: "{{ olakai_compose_plugin_path | dirname }}"
+        state: directory
+        mode: "0755"
+
+    - name: Download the Docker Compose CLI plugin
+      ansible.builtin.get_url:
+        url: "{{ olakai_compose_url }}"
+        dest: "{{ olakai_compose_plugin_path }}"
+        checksum: "sha256:{{ olakai_compose_sha256[ansible_architecture] }}"
+        mode: "0755"
+
+- name: Enable and start the docker service
+  ansible.builtin.systemd_service:
+    name: docker
+    enabled: true
+    state: started
+
+- name: Check that docker compose v2 works
+  ansible.builtin.command:
+    cmd: docker compose version
+  register: olakai_compose_check
+  changed_when: false
+  failed_when: false
+
+- name: Assert docker compose v2 works
+  ansible.builtin.assert:
+    that:
+      - olakai_compose_check.rc == 0
+    fail_msg: >-
+      `docker compose version` failed. Install the docker-compose-plugin
+      package (Compose v2) and re-run.

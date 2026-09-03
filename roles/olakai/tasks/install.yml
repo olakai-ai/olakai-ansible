@@ -1,0 +1,135 @@
+---
+# Fresh install: download get.sh and run it non-interactively.
+#
+# Idempotency guard: <olakai_install_dir>/.env. get.sh writes it on a
+# successful install. When it exists the role skips the download and the run,
+# so a second playbook run reports zero changes.
+#
+# Secrets: the license key reaches get.sh only through the OLAKAI_LICENSE_KEY
+# environment variable (never argv, so it is not visible in `ps` or in the
+# Ansible task line). The task runs with no_log so neither the command nor
+# its output is written to Ansible logs. A separate task prints only the
+# OLAKAI_SETUP_URL line and a redacted error tail.
+
+- name: Check for an existing install (.env)
+  ansible.builtin.stat:
+    path: "{{ olakai_install_dir }}/.env"
+  register: olakai_env_stat
+
+- name: Report an existing install
+  ansible.builtin.debug:
+    msg: >-
+      {{ olakai_install_dir }}/.env exists: Olakai is already installed here.
+      Skipping get.sh. Use upgrade.yml to move to a newer release.
+  when: olakai_env_stat.stat.exists
+
+- name: Build the get.sh argument list
+  ansible.builtin.set_fact:
+    olakai_get_sh_args: >-
+      {{
+        [
+          '--non-interactive',
+          '--domain=' ~ olakai_domain,
+          '--admin-email=' ~ olakai_admin_email,
+          '--install-dir=' ~ olakai_install_dir
+        ]
+        + (['--version=' ~ olakai_version] if olakai_version else [])
+        + (['--no-tls'] if olakai_no_tls | bool else [])
+        + (['--skip-verify'] if olakai_skip_verify | bool else [])
+        + (['--verify-images'] if olakai_verify_images | bool else [])
+        + (['--rekor-bundle=' ~ olakai_rekor_bundle] if olakai_rekor_bundle else [])
+        + (['--auto-install-docker']
+           if (olakai_runtime_resolved == 'docker' and olakai_auto_install_docker | bool) else [])
+        + (['--force-overlay'] if olakai_force_overlay | bool else [])
+        + olakai_get_sh_extra_args
+      }}
+  when: not olakai_env_stat.stat.exists
+
+- name: Run the Olakai installer
+  when: not olakai_env_stat.stat.exists
+  block:
+    - name: Download get.sh
+      ansible.builtin.get_url:
+        url: "{{ olakai_get_sh_url }}"
+        dest: "{{ olakai_get_sh_tmp_path }}"
+        checksum: "{{ ('sha256:' ~ olakai_get_sh_sha256) if olakai_get_sh_sha256 else omit }}"
+        mode: "0700"
+        force: true
+
+    # get.sh must run as root (it prepares the OS, then hands off to the
+    # bundle's install.sh). The play already runs with become: true.
+    # CI=true makes get.sh strictly non-interactive even if a tty leaks in.
+    # NOTE: `--runtime=` is not a get.sh flag yet (installer stage S4). Under
+    # podman-rootless the OS is prepared and get.sh runs against the
+    # podman-docker shim. Pass the flag via olakai_get_sh_extra_args once
+    # the installer ships it.
+    - name: Run get.sh (output hidden, the license key is in its environment)  # noqa: no-changed-when
+      ansible.builtin.command:
+        argv: "{{ ['bash', olakai_get_sh_tmp_path] + olakai_get_sh_args }}"
+        creates: "{{ olakai_install_dir }}/.env"
+      environment:
+        OLAKAI_LICENSE_KEY: "{{ olakai_license_key }}"
+        CI: "true"
+      register: olakai_install_result
+      no_log: true
+      failed_when: false
+  always:
+    - name: Remove the downloaded get.sh
+      ansible.builtin.file:
+        path: "{{ olakai_get_sh_tmp_path }}"
+        state: absent
+
+- name: Extract the setup URL and a redacted error tail
+  ansible.builtin.set_fact:
+    olakai_setup_url_matches: >-
+      {{ (olakai_install_result.stdout | default(''))
+         | regex_findall('^OLAKAI_SETUP_URL=(\S+)$', multiline=True) }}
+    olakai_install_error_tail: >-
+      {{ ((olakai_install_result.stderr_lines | default([]))[-15:] | join('\n'))
+         | replace(olakai_license_key, '[redacted]') }}
+  no_log: true
+  when: not olakai_env_stat.stat.exists
+
+- name: Fail when the license was already consumed (HTTP 409)
+  ansible.builtin.fail:
+    msg: >-
+      get.sh failed: the relay rejected the license key with HTTP 409 (already
+      consumed by a previous install). A license key is single-use. Ask Olakai
+      sales for a fresh key, or if this host already ran a partial install,
+      check {{ olakai_install_dir }} and contact support@olakai.ai.
+  when:
+    - not olakai_env_stat.stat.exists
+    - olakai_install_result.rc | default(0) != 0
+    - "'409' in olakai_install_error_tail"
+
+- name: Fail when get.sh exited non-zero
+  ansible.builtin.fail:
+    msg:
+      - "get.sh exited with rc={{ olakai_install_result.rc }}. Last lines of stderr (redacted):"
+      - "{{ olakai_install_error_tail }}"
+      - "Partial state, if any, is preserved in {{ olakai_install_dir }}. Fix the cause and re-run."
+  when:
+    - not olakai_env_stat.stat.exists
+    - olakai_install_result.rc | default(0) != 0
+
+- name: Show the setup URL
+  ansible.builtin.debug:
+    msg:
+      - "Olakai is up at {{ 'http' if olakai_no_tls | bool else 'https' }}://{{ olakai_domain }}"
+      - "Magic link sent to {{ olakai_admin_email }}."
+      - "Fallback setup URL (expires in 24 hours): {{ olakai_setup_url_matches[-1] }}"
+  when:
+    - not olakai_env_stat.stat.exists
+    - olakai_setup_url_matches | length > 0
+
+- name: Show how to retrieve the setup URL when get.sh did not print it
+  ansible.builtin.debug:
+    msg:
+      - "Olakai is up at {{ 'http' if olakai_no_tls | bool else 'https' }}://{{ olakai_domain }}"
+      - "Magic link sent to {{ olakai_admin_email }}."
+      - >-
+        get.sh did not print OLAKAI_SETUP_URL (older get.sh). Retrieve the fallback URL with:
+        cd {{ olakai_install_dir }} && docker compose logs olakai-bootstrap | grep 'Setup URL'
+  when:
+    - not olakai_env_stat.stat.exists
+    - olakai_setup_url_matches | length == 0

@@ -1,0 +1,6 @@
+---
+# Handlers for the olakai role. The runtime and firewall tasks apply their
+# changes immediately (sysctl reload: true, firewalld immediate: true), so no
+# deferred handler is needed today. Keep this file so the role layout stays
+# standard.
+[]
