@@ -29,3 +29,9 @@ Role versions are tagged in lockstep with the on-prem bundle they were tested ag
 - Re-running `install.yml` on a host that already has `.env` no longer reads the registered installer result (a skipped task has no `stdout` or `rc`; a `creates:` skip has a placeholder `stdout`). Every task after `get.sh` is guarded with `olakai_install_ran`, and the second run prints "already installed here, no action".
 - `upgrade.yml` tolerates a skipped `upgrade.sh` (check mode) instead of failing on an undefined `stdout`.
 - The stderr redaction no longer inserts `[redacted]` between every character when the license key is empty.
+- `--check` no longer reports a fake success: the download and the run are skipped in check mode and the play prints "check mode: get.sh not executed".
+- The setup URL is never stored in a fact (a fact cache can persist `set_fact` values even with `no_log`). The `copy` task reads it from the registered stdout. The redacted stderr tail is cleared at the end of the play.
+- "No `OLAKAI_SETUP_URL=` line" (get.sh older than 2026.09.03) and "line present but empty" (URL not readable within 30 s, or `--quiet`) are reported with two different messages. The retrieval command uses the compose service name `bootstrap`.
+- The 409 detection matches `handshake rejected (409)` or `(409)`, not any `409` in stderr.
+- `get.sh` and the get.docker.com script are downloaded into a root-only `mkdtemp` directory (`ansible.builtin.tempfile`), not a fixed path under `/tmp`.
+- Docker runtime: the role prints the same trust-boundary warning `get.sh` prints before it runs the get.docker.com script. On Oracle Linux (which get.docker.com rejects) the role leaves the Docker install to `get.sh --auto-install-docker`.

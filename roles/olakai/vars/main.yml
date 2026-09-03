@@ -41,10 +41,6 @@ olakai_compose_url: >-
 olakai_compose_plugin_path: /usr/local/lib/docker/cli-plugins/docker-compose
 olakai_compose_bin_path: /usr/local/bin/docker-compose
 
-# Where the role downloads get.sh to before running it. Removed afterwards.
-olakai_get_sh_tmp_path: /tmp/olakai-get.sh
-olakai_docker_get_tmp_path: /tmp/olakai-get-docker.sh
-
 # Where install.yml stores the one-time setup URL get.sh printed (mode 0600).
 # Kept next to .env so it shares the install directory's ownership and is
 # gone with the directory on uninstall. See olakai_print_setup_url.
