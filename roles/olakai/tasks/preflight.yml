@@ -1,9 +1,9 @@
 ---
 # Preflight: fail early, with a clear message, before anything is changed.
 # get.sh repeats most of these checks. The role checks them first so the
-# failure is reported by Ansible with a pointer to the support matrix.
+# failure is reported by Ansible before anything is downloaded.
 
-- name: Assert the host is Linux on a supported CPU architecture
+- name: Assert the host is Linux on x86_64 or aarch64
   ansible.builtin.assert:
     that:
       - ansible_system == 'Linux'
@@ -11,7 +11,7 @@
     fail_msg: >-
       Olakai on-prem needs Linux on x86_64 or aarch64
       (got {{ ansible_system }} / {{ ansible_architecture }}).
-      See the platform support matrix linked from the README.
+      Refer to Olakai's platform support documentation.
 
 - name: Assert the host has enough memory
   ansible.builtin.assert:
@@ -21,25 +21,26 @@
       Olakai on-prem needs an 8 GB VM. This host reports
       {{ ansible_memtotal_mb }} MB usable (minimum {{ olakai_min_memtotal_mb }} MB).
 
-- name: Assert the distribution is in the support matrix
+# Same accept list as detect_os in get.sh. Not a support statement.
+- name: Assert the distribution is one the installer accepts
   ansible.builtin.assert:
     that:
-      - ansible_distribution in olakai_supported_distros
+      - ansible_distribution in olakai_accepted_distros
       - >-
         ansible_distribution == 'Ubuntu'
         or ansible_distribution == 'Amazon'
         or (ansible_distribution_major_version | int
-            >= olakai_supported_distros[ansible_distribution] | int)
+            >= olakai_accepted_distros[ansible_distribution] | int)
       - >-
         ansible_distribution != 'Ubuntu'
-        or ansible_distribution_version is version(olakai_supported_distros['Ubuntu'], '>=')
+        or ansible_distribution_version is version(olakai_accepted_distros['Ubuntu'], '>=')
       - >-
         ansible_distribution != 'Amazon'
-        or ansible_distribution_major_version == olakai_supported_distros['Amazon']
+        or ansible_distribution_major_version == olakai_accepted_distros['Amazon']
     fail_msg: >-
-      {{ ansible_distribution }} {{ ansible_distribution_version }} is not in the
-      Olakai platform support matrix. Supported: {{ olakai_supported_distros_human }}.
-      See the platform support matrix linked from the README.
+      The Olakai installer does not accept {{ ansible_distribution }}
+      {{ ansible_distribution_version }}. Accepted: {{ olakai_accepted_distros_human }}.
+      Refer to Olakai's platform support documentation for the qualified list.
 
 - name: Check that python3 is on PATH (get.sh parses the handshake with it)
   ansible.builtin.command:

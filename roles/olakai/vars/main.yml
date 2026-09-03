@@ -1,11 +1,12 @@
 ---
 # Role-internal constants. Not meant to be overridden by users.
 
-# Distros the role accepts, keyed by ansible_distribution, with the minimum
-# major version. Ubuntu is checked against 22.04 in preflight.yml because its
-# versions carry a meaningful minor. Keep in sync with the platform support
-# matrix (see README "Requirements").
-olakai_supported_distros:
+# Distros the role's preflight accepts, keyed by ansible_distribution, with
+# the minimum major version. Ubuntu is checked against 22.04 in preflight.yml
+# because its versions carry a meaningful minor. This list mirrors detect_os
+# in get.sh (what the installer accepts); it is not a support statement.
+# Refer to Olakai's platform support documentation for the qualified list.
+olakai_accepted_distros:
   Ubuntu: "22.04"
   Debian: "12"
   RedHat: "9"
@@ -15,9 +16,9 @@ olakai_supported_distros:
   OracleLinux: "9"
   Amazon: "2023"
 
-# Human-readable copy of the matrix for error messages.
-olakai_supported_distros_human: >-
-  Ubuntu 22.04+, Debian 12+, RHEL/Rocky/AlmaLinux/CentOS Stream 9+,
+# Human-readable copy of the list for error messages.
+olakai_accepted_distros_human: >-
+  Ubuntu 22.04+, Debian 12+, RHEL 9+ (Rocky and AlmaLinux 9+),
   Oracle Linux 9+, Amazon Linux 2023
 
 # Minimum usable RAM in MB. Cloud VMs advertised as 8 GB report about

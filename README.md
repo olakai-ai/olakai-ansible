@@ -8,7 +8,7 @@ The role is a thin wrapper. Ansible prepares the operating system (container run
 
 `install.yml`:
 
-1. Preflight: Linux, x86_64 or aarch64, 8 GB RAM, `python3`, supported distribution.
+1. Preflight: Linux, x86_64 or aarch64, 8 GB RAM, `python3`, a distribution the installer accepts.
 2. Runtime: installs Docker Engine + Compose v2, or prepares rootless Podman (packages, service user, subordinate ids, linger, sysctl for ports 80/443, user-scope Podman socket).
 3. Firewall: opens TCP 80 and 443 in firewalld or ufw when one of them is present.
 4. Install: downloads `get.sh`, runs it non-interactively with the license key in its environment, writes the one-time setup URL to a `0600` file on the host, deletes the script.
@@ -28,7 +28,7 @@ Control node:
 Target host:
 
 - One VM, 8 GB RAM, 80 GB free disk, x86_64 or aarch64.
-- A supported OS: Ubuntu 22.04 / 24.04, Debian 12, RHEL / Rocky / AlmaLinux / CentOS Stream 9 or 10, Oracle Linux 9 or 10, Amazon Linux 2023. The authoritative list is the Olakai platform support matrix: `https://docs.olakai.ai/on-prem/platform-support` (placeholder, page in progress).
+- Target hosts accepted by the installer: Ubuntu 22.04 or newer, Debian 12 or newer, RHEL 9 or newer (Rocky and AlmaLinux 9 or newer), Oracle Linux 9 or newer, Amazon Linux 2023. The role's preflight applies the same list as `get.sh`. This is not a support statement. Refer to Olakai's platform support documentation for the qualified list.
 - SSH access with password-less sudo, and `python3` on the host.
 - A public DNS A record for `olakai_domain` that points at the VM before you run the install (Let's Encrypt needs it).
 - Outbound HTTPS to `relay.olakai.ai` (license handshake, bundle download), `get.olakai.ai` (installer), `public.ecr.aws` (container images), and `get.docker.com` when Docker is auto-installed.

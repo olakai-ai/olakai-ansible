@@ -7,6 +7,9 @@ galaxy_info:
   company: Olakai, Inc.
   license: Apache-2.0
   min_ansible_version: "2.15"
+  # Target hosts accepted by the installer (get.sh detect_os). This list is
+  # not a support statement. Refer to Olakai's platform support documentation
+  # for the qualified list.
   platforms:
     - name: Ubuntu
       versions:
@@ -18,7 +21,6 @@ galaxy_info:
     - name: EL
       versions:
         - "9"
-        - "10"
   galaxy_tags:
     - olakai
     - onprem
