@@ -12,8 +12,25 @@ permissions:
 
 jobs:
   lint:
-    name: ansible-lint + yamllint
+    name: "ansible-core ${{ matrix.ansible_core }}"
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Declared floor (meta/main.yml min_ansible_version). ansible-core
+          # 2.15 needs Python 3.9-3.11 on the control node. Current
+          # ansible-lint releases need a newer ansible-core, so this entry
+          # runs yamllint and the syntax checks only.
+          - ansible_core: "2.15.13"
+            python: "3.11"
+            ansible_lint: ""
+          # Current release, with ansible-lint.
+          - ansible_core: "2.19.12"
+            python: "3.12"
+            ansible_lint: "26.8.0"
+    env:
+      YAMLLINT_VERSION: "1.38.0"
     steps:
       - name: Check out
         uses: actions/checkout@v4
@@ -21,10 +38,17 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: "${{ matrix.python }}"
 
-      - name: Install ansible-core, ansible-lint and yamllint
-        run: python -m pip install --upgrade pip ansible-core ansible-lint yamllint
+      - name: Install ansible-core and yamllint
+        run: >-
+          python -m pip install --upgrade pip
+          "ansible-core==${{ matrix.ansible_core }}"
+          "yamllint==${YAMLLINT_VERSION}"
+
+      - name: Install ansible-lint
+        if: matrix.ansible_lint != ''
+        run: python -m pip install "ansible-lint==${{ matrix.ansible_lint }}"
 
       - name: Install required collections
         # --no-cache works around a galaxy response-cache bug in current
@@ -35,6 +59,7 @@ jobs:
         run: yamllint --strict .
 
       - name: ansible-lint
+        if: matrix.ansible_lint != ''
         run: ansible-lint --offline
 
       - name: Syntax check the playbooks

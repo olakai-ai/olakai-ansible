@@ -11,7 +11,7 @@ Role versions are tagged in lockstep with the on-prem bundle they were tested ag
 - `install.yml` and `upgrade.yml` playbooks that wrap `get.sh` and `upgrade.sh`.
 - `olakai` role: preflight checks, Docker or rootless Podman runtime preparation, firewall ports, install, upgrade.
 - Example inventory and `group_vars` with an Ansible Vault reference for the license key.
-- ansible-lint and yamllint CI on pull requests.
+- ansible-lint and yamllint CI on pull requests, with pinned tool versions, on ansible-core 2.15 (the declared floor, yamllint and syntax checks) and 2.19 (with ansible-lint).
 - `olakai_print_setup_url` (default `false`). The one-time setup URL is written to `<olakai_install_dir>/.olakai-setup-url` (mode `0600`) instead of the job log; set the variable to `true` to print it with a warning.
 
 ### Security
