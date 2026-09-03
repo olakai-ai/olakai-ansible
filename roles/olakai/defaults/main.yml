@@ -50,9 +50,20 @@ olakai_runtime: auto
 olakai_service_user: olakai
 
 # podman-rootless only. Start of the 65536-wide subordinate uid/gid range for
-# the service user. Change it if another rootless user already owns this range
-# in /etc/subuid or /etc/subgid.
-olakai_subid_start: 100000
+# the service user. The default is 524288 (8 x 65536), not 100000: useradd
+# gives the first interactive user (ubuntu, opc, ec2-user) the range
+# 100000:65536 (SUB_UID_MIN in /etc/login.defs), and two users must never
+# share a range. The role fails before writing the range when it overlaps
+# any existing entry in /etc/subuid or /etc/subgid. Change it if the preflight
+# names a conflict.
+olakai_subid_start: 524288
+
+# podman-rootless only. The Olakai installer does not accept a Podman runtime
+# yet, so the podman-rootless path stops with a `fail` after the OS
+# preparation. Set to true to run get.sh anyway. Installer development only:
+# get.sh runs as root and rejects the podman-docker shim as "Docker 24+
+# required" with every shipped get.sh. See README "Runtime choice".
+olakai_allow_preview_runtime: false
 
 # Skip Caddy and Let's Encrypt. Use when TLS terminates upstream.
 # Maps to get.sh --no-tls.
