@@ -23,7 +23,7 @@ The role is a thin wrapper. Ansible prepares the operating system (container run
 Control node:
 
 - ansible-core 2.15 or newer.
-- Collections `ansible.posix` and `community.general` (`ansible-galaxy collection install -r requirements.yml`).
+- Collections `ansible.posix` and `community.general` (`ansible-galaxy collection install --no-cache -r requirements.yml`).
 
 Target host:
 
