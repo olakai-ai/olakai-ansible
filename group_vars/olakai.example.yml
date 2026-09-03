@@ -1,0 +1,34 @@
+---
+# Copy to group_vars/olakai.yml and edit. Every variable is documented in
+# roles/olakai/defaults/main.yml; this file shows the ones you normally set.
+
+# Required. Public DNS name that points at the VM. Becomes the app URL.
+olakai_domain: olakai.example.com
+
+# Required. First admin user. Receives the magic-link login e-mail.
+olakai_admin_email: admin@example.com
+
+# Required for install only. Single-use license key from Olakai sales.
+# Keep it in Ansible Vault, never in plain text:
+#   ansible-vault encrypt_string 'OLK-...' --name olakai_license_key
+# and paste the output below.
+olakai_license_key: !vault |
+  $ANSIBLE_VAULT;1.1;AES256
+  REPLACE_WITH_THE_OUTPUT_OF_ansible-vault_encrypt_string
+
+# Container runtime. auto = Docker on Debian/Ubuntu, rootless Podman on
+# RHEL-family (Oracle Linux, Rocky, Alma, RHEL). See README "Runtime choice".
+olakai_runtime: auto
+
+# Bundle version to install or upgrade to. Empty = latest servable release.
+olakai_version: ""
+
+# Where the bundle lives on the host.
+olakai_install_dir: /opt/olakai-onprem
+
+# Open TCP 80 and 443 in firewalld or ufw when one of them is present.
+olakai_manage_firewall: true
+
+# Upgrade only. Set to true when Olakai tells you a release contains a
+# destructive migration and you accept it. Maps to upgrade.sh --accept-data-loss.
+olakai_accept_data_loss: false

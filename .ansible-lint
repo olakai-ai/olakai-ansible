@@ -1,0 +1,25 @@
+---
+# ansible-lint configuration.
+profile: production
+
+exclude_paths:
+  - .git/
+  - .ansible/
+  - .github/
+  - collections/
+  - venv/
+
+# The example inventory and group_vars are documentation, not live config.
+kinds:
+  - playbook: "install.yml"
+  - playbook: "upgrade.yml"
+  - vars: "group_vars/*.example.yml"
+
+# get.sh and upgrade.sh are the product's signed entry points. The role runs
+# them with ansible.builtin.command on purpose (D-003: thin wrapper). Keep the
+# rule active so any other shell-out is still flagged; the two call sites carry
+# an explicit `# noqa` with the reason.
+skip_list: []
+
+warn_list:
+  - experimental
