@@ -51,6 +51,8 @@
     olakai_upgrade_user: >-
       {{ olakai_service_user if olakai_runtime_resolved == 'podman-rootless' else 'root' }}
 
+# No secret is involved here: upgrade.sh reads the deployment bearer from
+# .env itself and does not echo it, so its output can be shown.
 - name: Run upgrade.sh  # noqa: no-changed-when
   ansible.builtin.command:
     argv: "{{ ['bash', olakai_install_dir ~ '/upgrade.sh'] + olakai_upgrade_sh_args }}"
@@ -58,23 +60,34 @@
   become: true
   become_user: "{{ olakai_upgrade_user }}"
   register: olakai_upgrade_result
-  changed_when: "'UPGRADE COMPLETE' in olakai_upgrade_result.stdout"
+  changed_when: "'UPGRADE COMPLETE' in (olakai_upgrade_result.stdout | default(''))"
   failed_when: false
+
+# The command module skips itself in check mode (--check). The registered
+# result then has skipped: true and no stdout, stderr, or rc, so the tasks
+# below only run when upgrade.sh actually ran.
+- name: Report that upgrade.sh was not run (check mode)
+  ansible.builtin.debug:
+    msg: "upgrade.sh was not run (check mode). Nothing changed."
+  when: olakai_upgrade_result is skipped
 
 - name: Show the last lines of upgrade.sh output
   ansible.builtin.debug:
     msg: "{{ ((olakai_upgrade_result.stdout_lines | default([])) + (olakai_upgrade_result.stderr_lines | default([])))[-40:] }}"
+  when: olakai_upgrade_result is not skipped
 
 - name: Fail when upgrade.sh did not succeed
   ansible.builtin.fail:
     msg: >-
-      upgrade.sh exited with rc={{ olakai_upgrade_result.rc }}
+      upgrade.sh exited with rc={{ olakai_upgrade_result.rc | default('?') }}
       {{ '(UPGRADE FAILED reported)' if 'UPGRADE FAILED' in
-         (olakai_upgrade_result.stdout ~ olakai_upgrade_result.stderr) else '' }}.
+         ((olakai_upgrade_result.stdout | default('')) ~ (olakai_upgrade_result.stderr | default(''))) else '' }}.
       upgrade.sh rolls back to the previous version on its own when the
       migrate or health gate fails. Read the output above; for a destructive
       migration set olakai_accept_data_loss: true only after you have read
       what it destroys.
-  when: >-
-    olakai_upgrade_result.rc != 0
-    or 'UPGRADE FAILED' in (olakai_upgrade_result.stdout ~ olakai_upgrade_result.stderr)
+  when:
+    - olakai_upgrade_result is not skipped
+    - >-
+      olakai_upgrade_result.rc | default(0) != 0
+      or 'UPGRADE FAILED' in ((olakai_upgrade_result.stdout | default('')) ~ (olakai_upgrade_result.stderr | default('')))

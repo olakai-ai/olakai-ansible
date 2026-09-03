@@ -11,7 +11,7 @@ The role is a thin wrapper. Ansible prepares the operating system (container run
 1. Preflight: Linux, x86_64 or aarch64, 8 GB RAM, `python3`, supported distribution.
 2. Runtime: installs Docker Engine + Compose v2, or prepares rootless Podman (packages, service user, subordinate ids, linger, sysctl for ports 80/443, user-scope Podman socket).
 3. Firewall: opens TCP 80 and 443 in firewalld or ufw when one of them is present.
-4. Install: downloads `get.sh`, runs it non-interactively with the license key in its environment, prints the setup URL, deletes the script.
+4. Install: downloads `get.sh`, runs it non-interactively with the license key in its environment, writes the one-time setup URL to a `0600` file on the host, deletes the script.
 
 `upgrade.yml`:
 
@@ -51,7 +51,16 @@ ansible-vault encrypt_string 'OLK-your-license-key' --name olakai_license_key
 ansible-playbook -i inventory.ini install.yml --ask-vault-pass
 ```
 
-The last task prints the dashboard URL and a fallback setup link. The admin also receives a magic-link e-mail.
+The last task prints the dashboard URL and the path of the fallback setup link: `<olakai_install_dir>/.olakai-setup-url` on the host, mode `0600`. The admin also receives a magic-link e-mail.
+
+The setup link is a one-time admin token, so the role does not print it. Read it on the host and delete the file after the first login:
+
+```bash
+sudo cat /opt/olakai-onprem/.olakai-setup-url
+sudo rm /opt/olakai-onprem/.olakai-setup-url
+```
+
+Set `olakai_print_setup_url: true` to print the link in the play output anyway (for example on a laptop with no shared job log). Ansible and AWX job logs are retained and often readable by more people than the operator, so the default is `false`.
 
 ## Upgrades
 
@@ -81,7 +90,7 @@ Preview status of `podman-rootless`: this role version prepares the OS for rootl
 
 ## Idempotency
 
-Run the install playbook twice and the second run reports zero changes. The guard is `<olakai_install_dir>/.env`: `get.sh` writes it on success, and the role does not download or run `get.sh` while it exists. OS preparation tasks (packages, users, sysctl, firewall rules) are native Ansible modules and converge on their own.
+Run the install playbook twice and the second run reports zero changes. The guard is `<olakai_install_dir>/.env`: `get.sh` writes it on success, and the role does not download or run `get.sh` while it exists. The second run prints `.env exists: Olakai is already installed here` and touches nothing else; every task that reads the installer's output runs only when `get.sh` actually ran. OS preparation tasks (packages, users, sysctl, firewall rules) are native Ansible modules and converge on their own.
 
 A failed install keeps its partial state in the install directory, as `get.sh` does. Fix the cause and run the playbook again. `get.sh` never overwrites an existing `.env`.
 
@@ -105,7 +114,7 @@ This role expects three behaviours in `get.sh` that are being added in parallel 
 2. `--force-overlay` (or `OLAKAI_FORCE_OVERLAY=true`) proceeds when the install directory is not empty.
 3. A single line `OLAKAI_SETUP_URL=<url>` on stdout after a successful install.
 
-With an older `get.sh`: (1) the run fails with `missing required input 'LICENSE_KEY'`; (2) a non-empty install directory without `.env` aborts, so empty the directory first; (3) the role prints the `docker compose logs` command to retrieve the setup URL instead of the URL itself.
+With an older `get.sh`: (1) the run fails with `missing required input 'LICENSE_KEY'`; (2) a non-empty install directory without `.env` aborts, so empty the directory first; (3) the role prints the `docker compose logs` command to retrieve the setup URL instead of writing the URL file.
 
 Tagged releases of this repository track the on-prem bundle versions they were tested against.
 
@@ -113,7 +122,8 @@ Tagged releases of this repository track the on-prem bundle versions they were t
 
 - The license key is single-use. The relay rejects a second handshake with HTTP 409; the role reports that with a hint to contact Olakai sales.
 - The license key reaches `get.sh` through the `OLAKAI_LICENSE_KEY` environment variable, never as a command-line argument, so it is not visible in `ps` or in the Ansible task line.
-- The `get.sh` task runs with `no_log: true`. Ansible never records its command line or output. A separate task prints only the `OLAKAI_SETUP_URL` line, or a redacted tail of stderr on failure.
+- The `get.sh` task runs with `no_log: true`. Ansible never records its command line or output. On failure a separate task prints the last lines of stderr with the license key replaced by `[redacted]`.
+- The `OLAKAI_SETUP_URL` line is a one-time admin bootstrap token. The role writes it to `<olakai_install_dir>/.olakai-setup-url` (mode `0600`, owner `root`, or the service user under rootless Podman) and prints only the path. It appears in the play output, and so in the job log, only with `olakai_print_setup_url: true`. Delete the file after the first login.
 - Keep `olakai_license_key` in Ansible Vault. `group_vars/olakai.yml` is git-ignored in this repository.
 - Set `olakai_get_sh_sha256` to pin the installer once Olakai publishes checksums for `get.sh` releases.
 - `olakai_skip_verify` disables all cosign verification. Use it only for air-gapped installs where you verified the bundle out of band.

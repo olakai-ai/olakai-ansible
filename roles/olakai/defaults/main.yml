@@ -23,6 +23,16 @@ olakai_license_key: ""
 # upgrade.sh --install-dir=.
 olakai_install_dir: /opt/olakai-onprem
 
+# Install only. Print the fallback setup URL in the play output. The URL
+# carries a one-time admin bootstrap token (the same login the magic-link
+# e-mail gives), and Ansible or AWX job logs are retained and often readable
+# by more people than the operator. The role always writes the URL to
+# <olakai_install_dir>/.olakai-setup-url (mode 0600, owner root, or the
+# service user under podman-rootless) and prints only that path. Set this to
+# true to also print the URL, with a warning, when no one else can read the
+# job log.
+olakai_print_setup_url: false
+
 # Bundle version. Empty = latest servable release.
 # install: passes --version=<value> to get.sh when set.
 # upgrade: passes --to=<value> to upgrade.sh, or --to=latest when empty.
