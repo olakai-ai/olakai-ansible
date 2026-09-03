@@ -8,7 +8,7 @@ Role versions are tagged in lockstep with the on-prem bundle they were tested ag
 
 ### Added
 
-- `install.yml` and `upgrade.yml` playbooks that wrap the signed `get.sh` and `upgrade.sh`.
+- `install.yml` and `upgrade.yml` playbooks that wrap `get.sh` and `upgrade.sh`.
 - `olakai` role: preflight checks, Docker or rootless Podman runtime preparation, firewall ports, install, upgrade.
 - Example inventory and `group_vars` with an Ansible Vault reference for the license key.
 - ansible-lint and yamllint CI on pull requests.
@@ -23,6 +23,8 @@ Role versions are tagged in lockstep with the on-prem bundle they were tested ag
 - `podman-rootless` is prepared but not functional: the task file ends with a `fail` unless `olakai_allow_preview_runtime: true`. The Olakai installer does not accept a Podman runtime yet (`docker --version` under the podman-docker shim reports the Podman version, which `get.sh` rejects as "Docker 24+ required").
 - `olakai_subid_start` default moved from 100000 to 524288, and the role fails when the range overlaps any existing `/etc/subuid` or `/etc/subgid` entry. 100000 is the range `useradd` gives the first interactive user (`ubuntu`, `opc`, `ec2-user`).
 - `podman-restart.service` (a oneshot unit) is enabled only, no longer started on every run.
+- `olakai_unprivileged_port_start: ""` skips the sysctl and leaves the kernel default (1024) alone.
+- README: installer compatibility banner moved to the top; `get.sh` described as fetched over HTTPS and not itself signed (the bundle is cosign-verified); egress list now includes GitHub and Sigstore hosts; the placeholder documentation link is gone.
 
 ### Fixed
 

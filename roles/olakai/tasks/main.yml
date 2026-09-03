@@ -6,7 +6,7 @@
 #
 # The role never re-implements what get.sh and upgrade.sh do (license
 # handshake, bundle download, sha256 + cosign verification, .env, compose
-# bring-up). It prepares the OS and runs the signed scripts.
+# bring-up). It prepares the OS and runs the two scripts.
 
 - name: Validate olakai_action
   ansible.builtin.assert:

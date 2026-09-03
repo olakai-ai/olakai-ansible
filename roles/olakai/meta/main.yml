@@ -3,7 +3,7 @@ galaxy_info:
   role_name: olakai
   namespace: olakai
   author: Olakai
-  description: Install and upgrade Olakai on-prem by wrapping the signed get.sh and upgrade.sh
+  description: Install and upgrade Olakai on-prem by wrapping get.sh and upgrade.sh
   company: Olakai, Inc.
   license: Apache-2.0
   min_ansible_version: "2.15"

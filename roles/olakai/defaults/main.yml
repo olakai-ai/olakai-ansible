@@ -41,7 +41,10 @@ olakai_version: ""
 # Container runtime: "auto", "docker" or "podman-rootless".
 # auto resolves to docker on the Debian family (Ubuntu, Debian) and on
 # Amazon Linux, and to podman-rootless on the RedHat family (RHEL, Rocky,
-# AlmaLinux, CentOS Stream, Oracle Linux).
+# AlmaLinux, CentOS Stream, Oracle Linux). podman-rootless is prepared but
+# not functional until the installer accepts --runtime=podman-rootless; it
+# stops with a fail after the OS preparation. Set docker explicitly on the
+# RedHat family for a working install today. See README "Runtime choice".
 olakai_runtime: auto
 
 # podman-rootless only. Unprivileged system user that owns the Podman storage
@@ -99,9 +102,10 @@ olakai_accept_data_loss: false
 olakai_manage_firewall: true
 
 # podman-rootless only. Value for net.ipv4.ip_unprivileged_port_start so the
-# unprivileged service user can bind Caddy on 80 and 443. Set to 1024
-# to leave the kernel default alone, for example behind a load balancer with
-# olakai_no_tls: true.
+# unprivileged service user can bind Caddy on 80 and 443. This is host-wide:
+# every unprivileged process may then bind ports 80 to 1023. Set to "" to
+# leave the kernel default (1024) alone, for example with Caddy on 8080/8443
+# behind a load balancer once the installer supports it.
 olakai_unprivileged_port_start: 80
 
 # Where to download the installer from. The role needs get.sh 2026.09.03 or

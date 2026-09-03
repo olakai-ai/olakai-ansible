@@ -16,8 +16,11 @@ olakai_license_key: !vault |
   $ANSIBLE_VAULT;1.1;AES256
   REPLACE_WITH_THE_OUTPUT_OF_ansible-vault_encrypt_string
 
-# Container runtime. auto = Docker on Debian/Ubuntu, rootless Podman on
-# RHEL-family (Oracle Linux, Rocky, Alma, RHEL). See README "Runtime choice".
+# Container runtime. auto = Docker on Debian/Ubuntu, rootless Podman on the
+# RHEL family (Oracle Linux, Rocky, Alma, RHEL). Rootless Podman is prepared
+# but not functional until the installer accepts --runtime=podman-rootless;
+# set docker explicitly on the RHEL family for a working install today.
+# See README "Runtime choice".
 olakai_runtime: auto
 
 # Bundle version to install or upgrade to. Empty = latest servable release.

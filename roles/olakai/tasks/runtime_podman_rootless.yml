@@ -148,8 +148,9 @@
     creates: "/var/lib/systemd/linger/{{ olakai_service_user }}"
 
 # Host-wide setting: every unprivileged process on this host may then bind
-# ports from olakai_unprivileged_port_start up to 1023. See README
-# "Security notes".
+# ports from olakai_unprivileged_port_start up to 1023. Skipped when the
+# variable is empty (Caddy on 8080/8443 behind a load balancer, once the
+# installer supports it). See README "Security notes".
 - name: Allow the service user to bind ports 80 and 443
   ansible.posix.sysctl:
     name: net.ipv4.ip_unprivileged_port_start
@@ -158,6 +159,7 @@
     sysctl_set: true
     reload: true
     state: present
+  when: olakai_unprivileged_port_start | string | length > 0
 
 - name: Wait for the service user's systemd user manager
   ansible.builtin.wait_for:
