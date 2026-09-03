@@ -57,14 +57,12 @@
       python3 is not on PATH. get.sh needs it to parse the license handshake.
       Install it with the distro package manager (python3) and re-run.
 
+# auto resolves to docker on every family until the installer accepts
+# --runtime=podman-rootless. podman-rootless is explicit opt-in and stops
+# with a fail after the OS preparation (see runtime_podman_rootless.yml).
 - name: Resolve olakai_runtime from auto
   ansible.builtin.set_fact:
-    olakai_runtime_resolved: >-
-      {{
-        olakai_runtime if olakai_runtime != 'auto'
-        else ('docker' if (ansible_os_family == 'Debian' or ansible_distribution == 'Amazon')
-              else 'podman-rootless')
-      }}
+    olakai_runtime_resolved: "{{ 'docker' if olakai_runtime == 'auto' else olakai_runtime }}"
 
 - name: Assert the resolved runtime is valid
   ansible.builtin.assert:

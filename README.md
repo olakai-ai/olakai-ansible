@@ -113,9 +113,11 @@ If Olakai marks a release as containing a destructive migration, `upgrade.sh` re
 
 | Value | Behaviour |
 | --- | --- |
-| `auto` (default) | `docker` on Ubuntu, Debian and Amazon Linux. `podman-rootless` on RHEL, Rocky, AlmaLinux, CentOS Stream and Oracle Linux. Set `docker` explicitly on the RedHat family for a working install today. |
+| `auto` (default) | `docker` on every family (Ubuntu, Debian, RHEL, Rocky, AlmaLinux, CentOS Stream, Oracle Linux, Amazon Linux) until the installer accepts `--runtime=podman-rootless`. |
 | `docker` | Docker Engine 24+ with Compose v2. Installed from `get.docker.com` when missing and `olakai_auto_install_docker` is true (Amazon Linux uses the distro package; Oracle Linux is left to `get.sh`, which installs from Docker's CentOS package repository because `get.docker.com` rejects `ID=ol`). |
-| `podman-rootless` | Prepared but not functional until the installer accepts `--runtime=podman-rootless`. The role installs Podman with the `podman-docker` shim and a standalone Compose v2 binary, creates an unprivileged `olakai` service user with subordinate ids, and sets `net.ipv4.ip_unprivileged_port_start=80`. Then it stops with a `fail`. |
+| `podman-rootless` | Explicit opt-in. Prepared but not functional until the installer accepts `--runtime=podman-rootless`. The role installs Podman with the `podman-docker` shim and a standalone Compose v2 binary, creates an unprivileged `olakai` service user with subordinate ids, and sets `net.ipv4.ip_unprivileged_port_start=80`. Then it stops with a `fail`. |
+
+On Oracle Linux the role does not run `get.docker.com` (it rejects `ID=ol`). It delegates the Docker CE install to `get.sh --auto-install-docker`, which installs from Docker's CentOS package repository over HTTPS. Docker CE on Oracle Linux is community-supported: Docker does not list Oracle Linux as a supported platform for Docker Engine, and the CentOS packages are used as-is.
 
 Why `podman-rootless` stops: `get.sh` does not accept a `--runtime=` flag yet (rootless Podman support in the Olakai installer is in progress), and no shipped `get.sh` can pass its own Docker check under the shim. With `podman-docker`, `docker --version` prints `podman version 5.x`; `get.sh` reads the third field as the Docker major version, sees `5 < 24` and dies with `Docker 24+ required`. On top of that, `install.yml` runs `get.sh` as root while `upgrade.yml` runs `upgrade.sh` as the service user, so file ownership does not line up until the installer owns the runtime switch. `olakai_allow_preview_runtime: true` skips the final `fail` for installer development only. When the installer ships the flag, pass it with `olakai_get_sh_extra_args: ["--runtime=podman-rootless"]`; the OS preparation is already what it expects.
 

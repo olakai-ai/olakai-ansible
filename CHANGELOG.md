@@ -20,6 +20,7 @@ Role versions are tagged in lockstep with the on-prem bundle they were tested ag
 
 ### Changed
 
+- `olakai_runtime: auto` resolves to `docker` on every family, including the RedHat family and Oracle Linux, until the installer accepts `--runtime=podman-rootless`. `podman-rootless` is explicit opt-in.
 - `podman-rootless` is prepared but not functional: the task file ends with a `fail` unless `olakai_allow_preview_runtime: true`. The Olakai installer does not accept a Podman runtime yet (`docker --version` under the podman-docker shim reports the Podman version, which `get.sh` rejects as "Docker 24+ required").
 - `olakai_subid_start` default moved from 100000 to 524288, and the role fails when the range overlaps any existing `/etc/subuid` or `/etc/subgid` entry. 100000 is the range `useradd` gives the first interactive user (`ubuntu`, `opc`, `ec2-user`).
 - `podman-restart.service` (a oneshot unit) is enabled only, no longer started on every run.

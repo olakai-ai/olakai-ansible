@@ -39,12 +39,10 @@ olakai_print_setup_url: false
 olakai_version: ""
 
 # Container runtime: "auto", "docker" or "podman-rootless".
-# auto resolves to docker on the Debian family (Ubuntu, Debian) and on
-# Amazon Linux, and to podman-rootless on the RedHat family (RHEL, Rocky,
-# AlmaLinux, CentOS Stream, Oracle Linux). podman-rootless is prepared but
-# not functional until the installer accepts --runtime=podman-rootless; it
-# stops with a fail after the OS preparation. Set docker explicitly on the
-# RedHat family for a working install today. See README "Runtime choice".
+# auto resolves to docker on every family (Debian, RedHat, Amazon Linux)
+# until the installer accepts --runtime=podman-rootless. podman-rootless is
+# explicit opt-in: it is prepared but not functional, and stops with a fail
+# after the OS preparation. See README "Runtime choice".
 olakai_runtime: auto
 
 # podman-rootless only. Unprivileged system user that owns the Podman storage
