@@ -39,7 +39,7 @@ Target host:
 ```bash
 git clone https://github.com/olakai-ai/olakai-ansible.git
 cd olakai-ansible
-ansible-galaxy collection install -r requirements.yml
+ansible-galaxy collection install --no-cache -r requirements.yml
 
 cp inventory.example.ini inventory.ini            # set ansible_host and ansible_user
 cp group_vars/olakai.example.yml group_vars/olakai.yml
@@ -127,7 +127,7 @@ All variables, with comments, are in `roles/olakai/defaults/main.yml`. The ones 
 
 ```bash
 pip install ansible-core ansible-lint yamllint
-ansible-galaxy collection install -r requirements.yml
+ansible-galaxy collection install --no-cache -r requirements.yml
 yamllint --strict .
 ansible-lint
 ansible-playbook --syntax-check -i inventory.example.ini install.yml
