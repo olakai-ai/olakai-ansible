@@ -13,12 +13,31 @@
   ansible.builtin.fail:
     msg: >-
       Docker is not installed and olakai_auto_install_docker is false.
-      Install Docker Engine 24+ with Compose v2 from the signed repos
-      (https://docs.docker.com/engine/install/) or set
-      olakai_auto_install_docker: true.
+      Install Docker Engine 24+ with Compose v2 from Docker's signed package
+      repositories (https://docs.docker.com/engine/install/) and re-run, or
+      set olakai_auto_install_docker: true.
   when:
     - not olakai_docker_stat.stat.exists
     - not olakai_auto_install_docker | bool
+
+# Oracle Linux: get.docker.com rejects ID=ol ("Unsupported distribution").
+# The role does not run it there. get.sh (with --auto-install-docker, which
+# install.yml passes when olakai_auto_install_docker is true) installs Docker
+# CE from Docker's CentOS package repository over HTTPS instead. The service
+# and compose checks below are skipped in that case; get.sh repeats them.
+- name: Record whether the Docker install is delegated to get.sh (Oracle Linux)
+  ansible.builtin.set_fact:
+    olakai_docker_delegated: >-
+      {{ not olakai_docker_stat.stat.exists and ansible_distribution == 'OracleLinux' }}
+
+- name: Delegate the Docker install to get.sh on Oracle Linux
+  ansible.builtin.debug:
+    msg: >-
+      Docker is not installed. get.docker.com rejects Oracle Linux (ID=ol), so
+      the role leaves the install to get.sh: it runs with --auto-install-docker
+      and installs Docker CE from Docker's CentOS package repository
+      (https://download.docker.com/linux/centos/docker-ce.repo).
+  when: olakai_docker_delegated | bool
 
 # get.docker.com does not support Amazon Linux; use the distro package there.
 - name: Install Docker from the distro package (Amazon Linux)
@@ -32,23 +51,44 @@
 - name: Install Docker with the get.docker.com script
   when:
     - not olakai_docker_stat.stat.exists
-    - ansible_distribution != 'Amazon'
+    - ansible_distribution not in ['Amazon', 'OracleLinux']
   block:
+    # Same warning get.sh prints before it runs this script itself.
+    - name: Warn about the get.docker.com trust boundary
+      ansible.builtin.debug:
+        msg: >-
+          WARNING: installing Docker with the get.docker.com script. The upstream
+          installer script is NOT signature-verified, so this extends the
+          install's trust boundary to docker.com's HTTPS-served script. For a
+          conservative install set olakai_auto_install_docker: false and install
+          Docker Engine 24+ with Compose v2 from Docker's signed package
+          repositories (https://docs.docker.com/engine/install/) before you run
+          this playbook.
+
+    # mkdtemp: mode 0700, owner root, so no other user on the host can swap
+    # the script between download and run.
+    - name: Create a root-only temporary directory for the get.docker.com script
+      ansible.builtin.tempfile:
+        state: directory
+        prefix: olakai-get-docker.
+      register: olakai_docker_get_tmpdir
+
     - name: Download the get.docker.com script
       ansible.builtin.get_url:
         url: https://get.docker.com
-        dest: "{{ olakai_docker_get_tmp_path }}"
+        dest: "{{ olakai_docker_get_tmpdir.path }}/get-docker.sh"
         mode: "0700"
 
     - name: Run the get.docker.com script
       ansible.builtin.command:
-        cmd: "sh {{ olakai_docker_get_tmp_path }}"
+        cmd: "sh {{ olakai_docker_get_tmpdir.path }}/get-docker.sh"
         creates: "{{ olakai_docker_binary_path }}"
   always:
-    - name: Remove the get.docker.com script
+    - name: Remove the temporary directory with the get.docker.com script
       ansible.builtin.file:
-        path: "{{ olakai_docker_get_tmp_path }}"
+        path: "{{ olakai_docker_get_tmpdir.path }}"
         state: absent
+      when: olakai_docker_get_tmpdir.path is defined
 
 # Amazon Linux ships no compose plugin. Install the standalone binary as a CLI
 # plugin so `docker compose` works.
@@ -73,6 +113,7 @@
     name: docker
     enabled: true
     state: started
+  when: not olakai_docker_delegated | bool
 
 - name: Check that docker compose v2 works
   ansible.builtin.command:
@@ -80,6 +121,7 @@
   register: olakai_compose_check
   changed_when: false
   failed_when: false
+  when: not olakai_docker_delegated | bool
 
 - name: Assert docker compose v2 works
   ansible.builtin.assert:
@@ -88,3 +130,4 @@
     fail_msg: >-
       `docker compose version` failed. Install the docker-compose-plugin
       package (Compose v2) and re-run.
+  when: not olakai_docker_delegated | bool
