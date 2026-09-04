@@ -4,6 +4,29 @@ All notable changes to this role are recorded here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Role versions are tagged in lockstep with the on-prem bundle they were tested against.
 
+## [0.2.1] - Unreleased
+
+Follow-ups from the 0.2.0 review, aligned with `get.sh` 2026.09.04 (what `get.olakai.ai` serves) and the pending 2026.09.04.1.
+
+### Added
+
+- Preflight: a pinned `olakai_version` must be 1.5.8 or later when `olakai_env_overrides` or the private CA is set, under both runtimes. An older bundle starts the bundled stateful containers in spite of the overrides, with no error, and `get.sh` refuses `--private-ca` only after the handshake, when the single-use key is consumed. A pre-release pin is older than its base version: `v1.5.8-rc1` fails the floor, `v1.5.9-rc1` passes.
+- Preflight: every `olakai_env_overrides` value must be a string (a YAML `true` would be written as `True`); the message names the key and says to quote the value. A `!vault` value is accepted on ansible-core 2.15 and 2.19.
+- `ansible.cfg` at the repository root with `pipelining = True` under `[ssh_connection]`, for the service-user upgrade on hosts without `acl`.
+- README "Upgrades": the sudoers policy must allow `sudo -u <service user>` from the connection user (or connect as root); the `setfacl` / pipelining note; the PATH note.
+- README "Managed state": quote every value in YAML, `!unsafe` for a value with Jinja delimiters, `!vault` for credentials, the generated secrets are accepted and are for restoring a backup only, the 1.5.8 bundle floor.
+
+### Changed
+
+- The env overrides file is written as `KEY='value'` with an embedded `'` escaped as `'\''`, the one form `install.sh` (bash source), compose interpolation and the bundle's env reader all read as the same literal. A `$` in a password no longer truncates it at the first bring-up.
+- `olakai_env_keys_owned_by_get_sh` is exactly what `get.sh --env-file` refuses: `OLAKAI_DOMAIN`, `AUTH_URL`, `OLAKAI_ADMIN_EMAIL`, `OLAKAI_EMAIL_RELAY_KEY`, `OLAKAI_VERSION`, plus `OLAKAI_SKIP_VERIFY` and `OLAKAI_VERIFY_IMAGES` (installer PR #13, `get.sh` 2026.09.04.1). The generated secrets (`DEFAULT_ENCRYPTION_KEY`, `ENCRYPTION_SALT`, ...) are no longer refused: a restore into managed PostgreSQL needs them. README, defaults and the preflight comment no longer claim `get.sh` refuses them.
+- `upgrade.yml` passes `PATH=/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin` to `upgrade.sh` (RHEL `sudo` resets PATH to `secure_path`, which lacks `/usr/local/bin` where the compose provider lives; `get.sh` passes PATH for the same reason), and prints the full command it runs, environment included.
+- The install success message prints the full manual form for later bundle scripts under rootless Podman: `sudo runuser -u <user> -- env XDG_RUNTIME_DIR=/run/user/<uid> DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/<uid>/bus ./upgrade.sh --to=X.Y.Z`, with the real uid (resolved after `get.sh` created the user). The `docker compose logs` hint carries the same prefix.
+- The redacted stderr tail also replaces every `olakai_env_overrides` value with `[redacted]`, longest first, and is cleared on the failure path too (the clear moved into an `always:` section).
+- Private CA: the `-----BEGIN CERTIFICATE-----` header is accepted anywhere within the first 4096 bytes, the rule of `get.sh` 2026.09.04.1 (a first line that is exactly the header passes as before); the staged copy ends with a newline (the file lookup strips it).
+- README: the compatibility banner states that `get.olakai.ai` serves 2026.09.04; the fact-cache justification says what is true (`set_fact` is cached only with `cacheable: true`; the URL stays out of facts as defense in depth); the manual upgrade command is the full form, not the short one from the `get.sh` banner.
+- The values in the README, defaults and `group_vars` examples are quoted.
+
 ## [0.2.0] - Unreleased
 
 ### Added

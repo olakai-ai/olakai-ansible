@@ -40,16 +40,20 @@ olakai_accept_data_loss: false
 
 # Install only. Managed state: customer-managed PostgreSQL, Redis and object
 # storage instead of the bundled containers. Needs get.sh 2026.09.04 or
-# later. Keep the credentials in Ansible Vault. See README "Managed state".
+# later and bundle 1.5.8 or later. Quote every value (YAML would turn an
+# unquoted true into a boolean, and the preflight refuses a value that is
+# not a string). Keep the credentials in Ansible Vault: a !vault value works
+# in place of the quoted string. See README "Managed state".
 # olakai_env_overrides:
-#   DATABASE_URL: "postgresql://olakai:PASSWORD@db.example.com:5432/olakai?sslmode=verify-full"
-#   REDIS_URL: "rediss://:PASSWORD@cache.example.com:6380"
-#   OBJECT_STORAGE_KIND: s3
-#   OBJECT_STORAGE_ENDPOINT: https://s3.us-east-1.amazonaws.com
-#   OBJECT_STORAGE_REGION: us-east-1
-#   OBJECT_STORAGE_BUCKET: customer-olakai-documents
-#   OBJECT_STORAGE_ACCESS_KEY: AKIA...
-#   OBJECT_STORAGE_SECRET_KEY: "..."
+#   DATABASE_URL: 'postgresql://olakai:PASSWORD@db.example.com:5432/olakai?sslmode=verify-full'
+#   REDIS_URL: 'rediss://:PASSWORD@cache.example.com:6380'
+#   OBJECT_STORAGE_KIND: 's3'
+#   OBJECT_STORAGE_ENDPOINT: 'https://s3.us-east-1.amazonaws.com'
+#   OBJECT_STORAGE_REGION: 'us-east-1'
+#   OBJECT_STORAGE_BUCKET: 'customer-olakai-documents'
+#   OBJECT_STORAGE_ACCESS_KEY: 'AKIA...'
+#   OBJECT_STORAGE_SECRET_KEY: '...'
+#   OBJECT_STORAGE_FORCE_PATH_STYLE: 'true'
 #
 # Install only. CA (PEM) that signed the managed PostgreSQL or Redis server
 # certificate, when it is not a public CA. A file on the control node:
