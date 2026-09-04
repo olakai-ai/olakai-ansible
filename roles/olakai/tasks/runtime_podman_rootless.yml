@@ -1,0 +1,215 @@
+---
+# Rootless Podman runtime: prepare the OS so an unprivileged service user can
+# run the Olakai compose stack with Podman.
+#
+# STATUS: prepared, not functional. This file ends with a `fail` by default.
+# The Olakai installer (get.sh) does not accept a Podman runtime yet:
+#   - `get.sh --runtime=` does not exist (rootless Podman support in the
+#     Olakai installer is in progress).
+#   - With podman-docker, `docker --version` prints "podman version 5.x".
+#     get.sh parses field 3 as the Docker major version, sees 5 < 24 and dies
+#     with "Docker 24+ required". No shipped get.sh can pass this check.
+#   - install.yml runs get.sh as root, while upgrade.yml runs upgrade.sh as
+#     the service user. Until the installer owns the runtime switch, the
+#     files get.sh writes belong to root and the upgrade path does not line
+#     up with them.
+# Set olakai_allow_preview_runtime: true to skip the final `fail` and let
+# install.yml call get.sh anyway (for installer development only).
+#
+# What this file sets up:
+#   1. podman + podman-docker (the `docker` CLI shim) + a standalone Docker
+#      Compose v2 binary that `podman compose` delegates to.
+#   2. A system service user with subordinate uid/gid ranges and systemd
+#      linger, so its user units survive logout and reboot.
+#   3. net.ipv4.ip_unprivileged_port_start so Caddy can bind 80/443.
+#   4. User-scope podman.socket and podman-restart.service.
+#   5. The install directory, owned by the service user.
+
+- name: Install Podman packages
+  ansible.builtin.package:
+    name: "{{ olakai_podman_packages }}"
+    state: present
+
+- name: Warn about the Podman version on Ubuntu
+  ansible.builtin.debug:
+    msg: >-
+      Ubuntu ships an older Podman (4.9 on 24.04). The rootless preparation
+      targets Podman 5.x as shipped by RHEL 9 rebuilds. Proceeding; if you
+      hit compose or networking issues, prefer the docker runtime on Ubuntu.
+  when: ansible_distribution == 'Ubuntu'
+
+- name: Silence the podman-docker shim notice
+  ansible.builtin.file:
+    path: /etc/containers/nodocker
+    state: touch
+    mode: "0644"
+    modification_time: preserve
+    access_time: preserve
+
+- name: Create the Docker CLI plugin directory
+  ansible.builtin.file:
+    path: "{{ olakai_compose_plugin_path | dirname }}"
+    state: directory
+    mode: "0755"
+
+- name: Install Docker Compose v2 as a CLI plugin
+  ansible.builtin.get_url:
+    url: "{{ olakai_compose_url }}"
+    dest: "{{ olakai_compose_plugin_path }}"
+    checksum: "sha256:{{ olakai_compose_sha256[ansible_architecture] }}"
+    mode: "0755"
+
+# `podman compose` looks for docker-compose on PATH; the plugin path is not
+# on PATH. Keep both copies in sync from the verified download.
+- name: Install Docker Compose v2 on PATH for podman compose
+  ansible.builtin.copy:
+    src: "{{ olakai_compose_plugin_path }}"
+    dest: "{{ olakai_compose_bin_path }}"
+    remote_src: true
+    mode: "0755"
+
+- name: Create the service user
+  ansible.builtin.user:
+    name: "{{ olakai_service_user }}"
+    system: true
+    create_home: true
+    home: "/home/{{ olakai_service_user }}"
+    shell: /bin/bash
+    state: present
+  register: olakai_service_user_result
+
+# Subordinate id preflight. useradd hands the first interactive user the
+# range 100000:65536 (SUB_UID_MIN=100000 in /etc/login.defs on Ubuntu,
+# Debian and the RHEL family), so `ubuntu`, `opc` or `ec2-user` usually own
+# 100000-165535 already. Two users that share a subordinate range can read
+# and write each other's container files. The role therefore refuses to
+# write a range that overlaps any existing entry other than the service
+# user's own line, and names the owner of the conflicting range.
+- name: Read the subordinate id files
+  ansible.builtin.slurp:
+    src: "{{ item }}"
+  loop:
+    - /etc/subuid
+    - /etc/subgid
+  register: olakai_subid_files
+  failed_when: false
+
+- name: Find subordinate id ranges that overlap olakai_subid_start
+  ansible.builtin.set_fact:
+    olakai_subid_conflicts: >-
+      {%- set ns = namespace(conflicts=[]) -%}
+      {%- set start = olakai_subid_start | int -%}
+      {%- set end = start + 65535 -%}
+      {%- set own = [olakai_service_user, olakai_service_user_result.uid | string] -%}
+      {%- for f in olakai_subid_files.results if f.content is defined -%}
+        {%- for line in (f.content | b64decode).splitlines() -%}
+          {%- set parts = line.strip().split(':') -%}
+          {%- if parts | length == 3 and parts[0] not in own
+                and parts[1] is match('^[0-9]+$') and parts[2] is match('^[0-9]+$') -%}
+            {%- set other_start = parts[1] | int -%}
+            {%- set other_end = other_start + (parts[2] | int) - 1 -%}
+            {%- if other_start <= end and other_end >= start -%}
+              {%- set ns.conflicts = ns.conflicts + [(f.item | basename) ~ ': ' ~ line.strip()] -%}
+            {%- endif -%}
+          {%- endif -%}
+        {%- endfor -%}
+      {%- endfor -%}
+      {{ ns.conflicts }}
+
+- name: Fail when the subordinate id range is already taken
+  ansible.builtin.fail:
+    msg: >-
+      The subordinate id range {{ olakai_subid_start }}-{{ olakai_subid_start | int + 65535 }}
+      for {{ olakai_service_user }} overlaps an existing entry:
+      {{ olakai_subid_conflicts | join('; ') }}.
+      Pick a free 65536-wide range and set olakai_subid_start (for example
+      {{ olakai_subid_start | int + 65536 }}), or remove the stale entry.
+  when: olakai_subid_conflicts | length > 0
+
+- name: Set the subordinate uid range for the service user
+  ansible.builtin.lineinfile:
+    path: /etc/subuid
+    regexp: "^{{ olakai_service_user }}:"
+    line: "{{ olakai_service_user }}:{{ olakai_subid_start }}:65536"
+    create: true
+    mode: "0644"
+
+- name: Set the subordinate gid range for the service user
+  ansible.builtin.lineinfile:
+    path: /etc/subgid
+    regexp: "^{{ olakai_service_user }}:"
+    line: "{{ olakai_service_user }}:{{ olakai_subid_start }}:65536"
+    create: true
+    mode: "0644"
+
+- name: Enable systemd linger for the service user
+  ansible.builtin.command:
+    cmd: "loginctl enable-linger {{ olakai_service_user }}"
+    creates: "/var/lib/systemd/linger/{{ olakai_service_user }}"
+
+# Host-wide setting: every unprivileged process on this host may then bind
+# ports from olakai_unprivileged_port_start up to 1023. Skipped when the
+# variable is empty (Caddy on 8080/8443 behind a load balancer, once the
+# installer supports it). See README "Security notes".
+- name: Allow the service user to bind ports 80 and 443
+  ansible.posix.sysctl:
+    name: net.ipv4.ip_unprivileged_port_start
+    value: "{{ olakai_unprivileged_port_start }}"
+    sysctl_file: /etc/sysctl.d/90-olakai.conf
+    sysctl_set: true
+    reload: true
+    state: present
+  when: olakai_unprivileged_port_start | string | length > 0
+
+- name: Wait for the service user's systemd user manager
+  ansible.builtin.wait_for:
+    path: "/run/user/{{ olakai_service_user_result.uid }}/bus"
+    timeout: 30
+
+- name: Enable and start the user-scope Podman socket
+  ansible.builtin.systemd_service:
+    name: podman.socket
+    scope: user
+    enabled: true
+    state: started
+    daemon_reload: true
+  become: true
+  become_user: "{{ olakai_service_user }}"
+  environment:
+    XDG_RUNTIME_DIR: "/run/user/{{ olakai_service_user_result.uid }}"
+    DBUS_SESSION_BUS_ADDRESS: "unix:path=/run/user/{{ olakai_service_user_result.uid }}/bus"
+
+# podman-restart.service is a oneshot unit that runs at boot. Starting it
+# here would report a change on every run; enabling it is enough.
+- name: Enable the user-scope Podman restart unit
+  ansible.builtin.systemd_service:
+    name: podman-restart.service
+    scope: user
+    enabled: true
+  become: true
+  become_user: "{{ olakai_service_user }}"
+  environment:
+    XDG_RUNTIME_DIR: "/run/user/{{ olakai_service_user_result.uid }}"
+    DBUS_SESSION_BUS_ADDRESS: "unix:path=/run/user/{{ olakai_service_user_result.uid }}/bus"
+
+- name: Create the install directory owned by the service user
+  ansible.builtin.file:
+    path: "{{ olakai_install_dir }}"
+    state: directory
+    owner: "{{ olakai_service_user }}"
+    group: "{{ olakai_service_user }}"
+    mode: "0750"
+
+- name: Stop before get.sh (the installer does not accept a Podman runtime yet)
+  ansible.builtin.fail:
+    msg: >-
+      The OS preparation for rootless Podman is done (packages, service user
+      {{ olakai_service_user }}, subordinate ids, linger, sysctl, user-scope
+      Podman socket, {{ olakai_install_dir }}). get.sh was not run: the Olakai
+      installer does not accept a Podman runtime yet. With the podman-docker
+      shim, `docker --version` reports the Podman version and get.sh rejects
+      it as "Docker 24+ required". Use olakai_runtime: docker for a working
+      install today, or set olakai_allow_preview_runtime: true to run get.sh
+      anyway (installer development only; install runs as root while upgrade
+      runs as {{ olakai_service_user }}, so ownership will not line up).
+  when: not olakai_allow_preview_runtime | bool

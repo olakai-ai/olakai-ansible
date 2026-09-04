@@ -1,0 +1,49 @@
+---
+# Open TCP 80 and 443 on the host firewall. Uses firewalld when its service
+# is present (RedHat family default), ufw when the ufw binary is present
+# (Ubuntu default), and skips otherwise. Never installs or enables a
+# firewall. Cloud security groups are not touched.
+
+- name: Gather service facts
+  ansible.builtin.service_facts:
+
+- name: Check whether ufw is installed
+  ansible.builtin.stat:
+    path: /usr/sbin/ufw
+  register: olakai_ufw_stat
+
+- name: Set firewall facts
+  ansible.builtin.set_fact:
+    olakai_firewalld_present: >-
+      {{ 'firewalld.service' in ansible_facts.services
+         and ansible_facts.services['firewalld.service'].state == 'running' }}
+    olakai_ufw_present: "{{ olakai_ufw_stat.stat.exists }}"
+
+- name: Open ports in firewalld
+  ansible.posix.firewalld:
+    port: "{{ item }}/tcp"
+    permanent: true
+    immediate: true
+    state: enabled
+  loop: "{{ olakai_firewall_ports }}"
+  when: olakai_firewalld_present | bool
+
+- name: Open ports in ufw
+  community.general.ufw:
+    rule: allow
+    port: "{{ item }}"
+    proto: tcp
+  loop: "{{ olakai_firewall_ports }}"
+  when:
+    - not olakai_firewalld_present | bool
+    - olakai_ufw_present | bool
+
+- name: Report when no host firewall is managed
+  ansible.builtin.debug:
+    msg: >-
+      Neither firewalld (running) nor ufw was found. No host firewall rule was
+      added. Make sure TCP {{ olakai_firewall_ports | join(' and ') }} are
+      reachable from the internet (Let's Encrypt HTTP-01 needs port 80).
+  when:
+    - not olakai_firewalld_present | bool
+    - not olakai_ufw_present | bool

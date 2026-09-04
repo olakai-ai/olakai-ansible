@@ -1,0 +1,10 @@
+---
+# Fresh install of Olakai on-prem.
+# Usage: ansible-playbook -i inventory.ini install.yml --ask-vault-pass
+- name: Install Olakai on-prem
+  hosts: olakai
+  become: true
+  vars:
+    olakai_action: install
+  roles:
+    - role: olakai

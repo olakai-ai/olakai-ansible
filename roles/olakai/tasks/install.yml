@@ -1,0 +1,260 @@
+---
+# Fresh install: download get.sh and run it non-interactively.
+#
+# Idempotency guard: <olakai_install_dir>/.env. get.sh writes it on a
+# successful install. When it exists the role skips the download and the run,
+# so a second playbook run reports zero changes.
+#
+# Secrets: the license key reaches get.sh only through the OLAKAI_LICENSE_KEY
+# environment variable (never argv, so it is not visible in `ps` or in the
+# Ansible task line). The task runs with no_log so neither the command nor
+# its output is written to Ansible logs. The OLAKAI_SETUP_URL line carries a
+# one-time admin bootstrap token; it goes to a 0600 file on the host, not to
+# the job log, unless olakai_print_setup_url is true. The URL is never stored
+# in a fact: set_fact values can be persisted by a fact cache (jsonfile,
+# redis, AWX) even with no_log, so the copy task reads the registered stdout
+# directly. The redacted stderr tail is the only intermediate fact and it is
+# cleared at the end.
+#
+# Check mode: the download and the run are skipped (a `command` task with
+# `creates:` would report changed: true in check mode without running, and
+# every task below would then read an empty result as a success).
+#
+# Re-runs: every task after "Run get.sh" is guarded with olakai_install_ran.
+# When get.sh did not run, the registered result is one of two shapes and
+# neither carries real installer output:
+#   - the block was skipped because .env exists or check mode is on:
+#     skipped: true, no stdout, no stderr, no rc;
+#   - `creates:` skipped the command because .env appeared between the stat
+#     and the run: changed: false, rc: 0, and stdout is the literal
+#     "skipped, since <path> exists" (not skipped: true).
+# Whether a get.sh that exited non-zero is reported as changed depends on the
+# ansible-core version, so `is changed` alone could hide failures.
+# olakai_install_ran checks rc as well and covers all of it.
+
+- name: Check for an existing install (.env)
+  ansible.builtin.stat:
+    path: "{{ olakai_install_dir }}/.env"
+  register: olakai_env_stat
+
+- name: Build the get.sh argument list
+  ansible.builtin.set_fact:
+    olakai_get_sh_args: >-
+      {{
+        [
+          '--non-interactive',
+          '--domain=' ~ olakai_domain,
+          '--admin-email=' ~ olakai_admin_email,
+          '--install-dir=' ~ olakai_install_dir
+        ]
+        + (['--version=' ~ olakai_version] if olakai_version else [])
+        + (['--no-tls'] if olakai_no_tls | bool else [])
+        + (['--skip-verify'] if olakai_skip_verify | bool else [])
+        + (['--verify-images'] if olakai_verify_images | bool else [])
+        + (['--rekor-bundle=' ~ olakai_rekor_bundle] if olakai_rekor_bundle else [])
+        + (['--auto-install-docker']
+           if (olakai_runtime_resolved == 'docker' and olakai_auto_install_docker | bool) else [])
+        + (['--force-overlay'] if olakai_force_overlay | bool else [])
+        + olakai_get_sh_extra_args
+      }}
+    # The setup URL file and, under rootless Podman, the install directory
+    # belong to the service user. Under Docker everything is root's.
+    olakai_install_owner: >-
+      {{ olakai_service_user if olakai_runtime_resolved == 'podman-rootless' else 'root' }}
+  when: not olakai_env_stat.stat.exists
+
+- name: Report check mode
+  ansible.builtin.debug:
+    msg: "check mode: get.sh not executed. Nothing was downloaded or run."
+  when: ansible_check_mode
+
+- name: Run the Olakai installer
+  when:
+    - not olakai_env_stat.stat.exists
+    - not ansible_check_mode
+  block:
+    # mkdtemp: mode 0700, owner root (the play runs with become: true), so no
+    # other user on the host can swap the script between download and run.
+    - name: Create a root-only temporary directory for get.sh
+      ansible.builtin.tempfile:
+        state: directory
+        prefix: olakai-get.
+      register: olakai_get_sh_tmpdir
+
+    - name: Download get.sh
+      ansible.builtin.get_url:
+        url: "{{ olakai_get_sh_url }}"
+        dest: "{{ olakai_get_sh_tmpdir.path }}/get.sh"
+        checksum: "{{ ('sha256:' ~ olakai_get_sh_sha256) if olakai_get_sh_sha256 else omit }}"
+        mode: "0700"
+        force: true
+
+    # get.sh must run as root (it prepares the OS, then hands off to the
+    # bundle's install.sh). The play already runs with become: true.
+    # CI=true makes get.sh strictly non-interactive even if a tty leaks in.
+    # NOTE: `--runtime=` is not a get.sh flag yet (rootless Podman support in
+    # the Olakai installer is in progress). runtime_podman_rootless.yml fails
+    # before this task unless olakai_allow_preview_runtime is true. With it,
+    # get.sh runs here as root against the podman-docker shim while
+    # upgrade.yml runs upgrade.sh as the service user, so file ownership
+    # does not line up until the installer owns the runtime switch. Pass the
+    # flag via olakai_get_sh_extra_args once the installer ships it.
+    # failed_when: false keeps the play alive on a non-zero exit so the tasks
+    # below can report a redacted reason instead of a censored no_log result.
+    - name: Run get.sh (output hidden, the license key is in its environment)  # noqa: no-changed-when
+      ansible.builtin.command:
+        argv: "{{ ['bash', olakai_get_sh_tmpdir.path ~ '/get.sh'] + olakai_get_sh_args }}"
+        creates: "{{ olakai_install_dir }}/.env"
+      environment:
+        OLAKAI_LICENSE_KEY: "{{ olakai_license_key }}"
+        CI: "true"
+      register: olakai_install_result
+      no_log: true
+      failed_when: false
+  always:
+    # Runs after the block whether the command ran, failed, or was skipped by
+    # `creates:`. Skipped when the directory was never created.
+    - name: Remove the temporary directory with get.sh
+      ansible.builtin.file:
+        path: "{{ olakai_get_sh_tmpdir.path }}"
+        state: absent
+      when: olakai_get_sh_tmpdir.path is defined
+
+# True only when get.sh executed (rc set and non-zero, or the run reported a
+# change). False in check mode and for both skipped shapes described at the
+# top of this file.
+- name: Record whether get.sh ran
+  ansible.builtin.set_fact:
+    olakai_install_ran: >-
+      {{ not ansible_check_mode
+         and olakai_install_result is not skipped
+         and (olakai_install_result.rc | default(0) != 0 or olakai_install_result is changed) }}
+
+- name: Report an existing install (no action)
+  ansible.builtin.debug:
+    msg: >-
+      {{ olakai_install_dir }}/.env exists: Olakai is already installed here.
+      get.sh was not run and nothing changed. Use upgrade.yml to move to a
+      newer release.
+  when:
+    - not ansible_check_mode
+    - not olakai_install_ran | bool
+
+- name: Handle the installer result
+  when: olakai_install_ran | bool
+  block:
+    # stderr may echo the license key (for example in a failed relay call), so
+    # the tail is redacted before any task prints it. The empty-key guard
+    # matters: str.replace('', x) would insert x between every character.
+    # The two booleans describe the OLAKAI_SETUP_URL= line without storing
+    # the URL: get.sh 2026.09.03+ always prints the line, and prints it empty
+    # when the URL could not be read within 30 s or --quiet was passed.
+    - name: Extract a redacted error tail and the setup URL line status
+      ansible.builtin.set_fact:
+        olakai_install_error_tail: >-
+          {%- set tail = (olakai_install_result.stderr_lines | default([]))[-15:] | join('\n') -%}
+          {{ tail | replace(olakai_license_key, '[redacted]') if olakai_license_key | length > 0 else tail }}
+        olakai_setup_url_line_present: >-
+          {{ (olakai_install_result.stdout | default('')) is search('^OLAKAI_SETUP_URL=', multiline=True) }}
+        olakai_setup_url_present: >-
+          {{ (olakai_install_result.stdout | default('')) is search('^OLAKAI_SETUP_URL=\S+$', multiline=True) }}
+      no_log: true
+
+    # get.sh prints: handshake rejected (409): license already consumed ...
+    - name: Fail when the license was already consumed (HTTP 409)
+      ansible.builtin.fail:
+        msg: >-
+          get.sh failed: the relay rejected the license key with HTTP 409 (already
+          consumed by a previous install). A license key is single-use. Ask Olakai
+          sales for a fresh key, or if this host already ran a partial install,
+          check {{ olakai_install_dir }} and contact support@olakai.ai.
+      when:
+        - olakai_install_result.rc | default(0) != 0
+        - >-
+          'handshake rejected (409)' in olakai_install_error_tail
+          or '(409)' in olakai_install_error_tail
+
+    - name: Fail when get.sh exited non-zero
+      ansible.builtin.fail:
+        msg:
+          - "get.sh exited with rc={{ olakai_install_result.rc }}. Last lines of stderr (redacted):"
+          - "{{ olakai_install_error_tail }}"
+          - "Partial state, if any, is preserved in {{ olakai_install_dir }}. Fix the cause and re-run."
+      when: olakai_install_result.rc | default(0) != 0
+
+    # The URL is a one-time admin bootstrap token. It lives on the host, readable
+    # by its owner only (0600, so the group does not matter and is left to the
+    # default). no_log keeps the content out of --diff and -v output. The URL
+    # is read from the registered stdout here, on purpose not from a fact.
+    - name: Write the setup URL to a 0600 file on the host
+      ansible.builtin.copy:
+        content: >-
+          {{ olakai_install_result.stdout
+             | regex_search('^OLAKAI_SETUP_URL=(\S+)$', '\1', multiline=True)
+             | first }}
+        dest: "{{ olakai_setup_url_path }}"
+        owner: "{{ olakai_install_owner }}"
+        mode: "0600"
+      no_log: true
+      when: olakai_setup_url_present | bool
+
+    - name: Show where the setup URL was written
+      ansible.builtin.debug:
+        msg:
+          - "Olakai is up at {{ 'http' if olakai_no_tls | bool else 'https' }}://{{ olakai_domain }}"
+          - "Magic link sent to {{ olakai_admin_email }}."
+          - >-
+            Fallback setup URL (expires in 24 hours) written to {{ olakai_setup_url_path }}
+            (mode 0600, owner {{ olakai_install_owner }}). Read it on the host with:
+            sudo cat {{ olakai_setup_url_path }}. Delete the file after the first login.
+          - >-
+            The URL is not printed here because it is a one-time admin token and this
+            output is kept in the job log. Set olakai_print_setup_url: true to print it anyway.
+      when: olakai_setup_url_present | bool
+
+    - name: Show the setup URL (olakai_print_setup_url is true)
+      ansible.builtin.debug:
+        msg:
+          - >-
+            WARNING: the URL below is a one-time admin token. It is now part of this
+            job log; treat the log as a secret and rotate the admin login if the log leaks.
+          - >-
+            Fallback setup URL (expires in 24 hours):
+            {{ olakai_install_result.stdout
+               | regex_search('^OLAKAI_SETUP_URL=(\S+)$', '\1', multiline=True)
+               | first }}
+      when:
+        - olakai_print_setup_url | bool
+        - olakai_setup_url_present | bool
+
+    - name: Show how to retrieve the setup URL (no OLAKAI_SETUP_URL line, older get.sh)
+      ansible.builtin.debug:
+        msg:
+          - "Olakai is up at {{ 'http' if olakai_no_tls | bool else 'https' }}://{{ olakai_domain }}"
+          - "Magic link sent to {{ olakai_admin_email }}."
+          - >-
+            get.sh did not print an OLAKAI_SETUP_URL= line. This get.sh is older than
+            2026.09.03 (see README "Installer compatibility"). Retrieve the fallback
+            URL on the host with:
+            cd {{ olakai_install_dir }} && docker compose logs bootstrap | grep "Setup URL"
+      when: not olakai_setup_url_line_present | bool
+
+    - name: Show how to retrieve the setup URL (OLAKAI_SETUP_URL line is empty)
+      ansible.builtin.debug:
+        msg:
+          - "Olakai is up at {{ 'http' if olakai_no_tls | bool else 'https' }}://{{ olakai_domain }}"
+          - "Magic link sent to {{ olakai_admin_email }}."
+          - >-
+            get.sh printed an empty OLAKAI_SETUP_URL= line: the bootstrap container had
+            not logged the URL within 30 seconds, or --quiet was passed through
+            olakai_get_sh_extra_args. Retrieve the fallback URL on the host with:
+            cd {{ olakai_install_dir }} && docker compose logs bootstrap | grep "Setup URL"
+      when:
+        - olakai_setup_url_line_present | bool
+        - not olakai_setup_url_present | bool
+
+    # The tail is redacted, but it is still installer stderr. Do not leave it
+    # in host vars where a fact cache could persist it.
+    - name: Clear the redacted error tail
+      ansible.builtin.set_fact:
+        olakai_install_error_tail: ""

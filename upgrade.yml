@@ -1,0 +1,11 @@
+---
+# Upgrade an existing Olakai on-prem install.
+# No license key is needed: upgrade.sh authenticates with the bearer in .env.
+# Usage: ansible-playbook -i inventory.ini upgrade.yml
+- name: Upgrade Olakai on-prem
+  hosts: olakai
+  become: true
+  vars:
+    olakai_action: upgrade
+  roles:
+    - role: olakai
