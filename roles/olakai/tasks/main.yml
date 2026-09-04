@@ -6,7 +6,9 @@
 #
 # The role never re-implements what get.sh and upgrade.sh do (license
 # handshake, bundle download, sha256 + cosign verification, .env, compose
-# bring-up). It prepares the OS and runs the two scripts.
+# bring-up, and under podman-rootless the whole host preparation: Podman,
+# compose provider, service user, subordinate ids, linger, sysctl, user
+# units). It checks the host, opens the firewall and runs the two scripts.
 
 - name: Validate olakai_action
   ansible.builtin.assert:
@@ -27,7 +29,7 @@
     - olakai_action == 'install'
     - olakai_runtime_resolved == 'docker'
 
-- name: Prepare rootless Podman runtime
+- name: Check rootless Podman prerequisites
   ansible.builtin.include_tasks: runtime_podman_rootless.yml
   when:
     - olakai_action == 'install'

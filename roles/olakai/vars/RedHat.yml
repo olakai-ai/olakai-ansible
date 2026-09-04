@@ -1,13 +1,6 @@
 ---
 # RedHat family (RHEL, Rocky, AlmaLinux, CentOS Stream, Oracle Linux, Amazon).
 
-# Rootless Podman. podman-docker provides the `docker` CLI shim that get.sh
-# and the bundle's install.sh call. shadow-utils provides newuidmap/newgidmap.
-olakai_podman_packages:
-  - podman
-  - podman-docker
-  - shadow-utils
-
 # Path get.docker.com (or the Amazon Linux `docker` package) installs the
 # Docker CLI to on this family.
 olakai_docker_binary_path: /usr/bin/docker

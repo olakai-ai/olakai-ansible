@@ -4,6 +4,31 @@ All notable changes to this role are recorded here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Role versions are tagged in lockstep with the on-prem bundle they were tested against.
 
+## [0.2.0] - Unreleased
+
+### Added
+
+- `olakai_runtime: podman-rootless` is a working install mode. The role passes `--runtime=podman-rootless --service-user=<olakai_service_user>` to `get.sh` (2026.09.03.2 or later), which prepares the host itself: Podman 5 + `podman-docker` from the distro repositories, the `docker-compose` provider pinned by SHA256 and registered in `/etc/containers/containers.conf.d/olakai-compose.conf`, the service user with a free 65536-wide subordinate id range (overlap-checked), systemd linger, `net.ipv4.ip_unprivileged_port_start=80`, the user-scope `podman.socket` and `podman-restart.service`, then hands the install directory to the service user (`.olakai-runtime` marker, Podman overlay) and runs `install.sh` through `runuser`. Qualified on Oracle Linux 9.8 (Podman 5.8.2); other RHEL 9 family distributions are accepted.
+- Preflight for `podman-rootless`: systemd, cgroup v2, unprivileged user namespaces, `runuser`, a service user name `get.sh` accepts, and a pinned `olakai_version` of 1.5.10 or later (the bundle floor for rootless Podman; checked before the license key is consumed).
+- `upgrade.yml` detects the runtime from `<olakai_install_dir>/.olakai-runtime` when `olakai_runtime` is `auto`, and runs `upgrade.sh` as the service user (with `XDG_RUNTIME_DIR` and the D-Bus address of that user) under rootless Podman. An explicit `olakai_runtime` that contradicts the marker fails before `upgrade.sh` runs.
+- `olakai_env_overrides` (dict): `.env` values for managed-state deployments (customer-managed PostgreSQL, Redis, object storage). Written to a root-owned `0600` temporary file with `no_log`, passed as `get.sh --env-file=`, removed after the run. Keys `get.sh` writes itself are refused by the preflight. Needs `get.sh` 2026.09.04 or later.
+- `olakai_private_ca_pem` / `olakai_private_ca_file`: a private CA (PEM) passed as `get.sh --private-ca=`; `get.sh` installs it at `<olakai_install_dir>/certs/private-ca.pem` and activates the private-CA overlay. Needs `get.sh` 2026.09.04 or later.
+- README section "Managed state" with the `.env` keys, the DNS-name and `sslmode=verify-full` guidance and the private-CA guidance from the bundle README.
+- The setup-URL retrieval hints and the success message name the service user form (`sudo runuser -u <user> -- ...`) under rootless Podman.
+
+### Changed
+
+- `runtime_podman_rootless.yml` no longer installs Podman, downloads Compose, creates the service user, writes `/etc/subuid` and `/etc/subgid`, enables linger, sets the sysctl, or enables user units. `get.sh` does all of it, with the subordinate id overlap check that is tested against the bundle. The role keeps a read-only preflight and the firewall rules.
+- `olakai_runtime: auto` still resolves to `docker` on every family for a fresh install. `podman-rootless` stays explicit opt-in.
+- Compose binary constants in `vars/main.yml` are now used by the Amazon Linux docker path only.
+- README: the runtime section describes what `get.sh` changes on the host under `podman-rootless`, the bundle 1.5.10 floor, the automatic service-user upgrade, and the security model (a container escape yields the service user, not root). The installer compatibility banner names `get.sh` 2026.09.03.2 for rootless Podman and 2026.09.04 for `--env-file` / `--private-ca`.
+
+### Removed
+
+- `olakai_allow_preview_runtime`, `olakai_subid_start` and `olakai_unprivileged_port_start`. `get.sh` picks the subordinate id range (first free 65536-wide range at or above 524288) and always sets `net.ipv4.ip_unprivileged_port_start=80` under `podman-rootless`.
+- `olakai_podman_packages` (`vars/Debian.yml`, `vars/RedHat.yml`) and `olakai_compose_bin_path`.
+- The `ansible.posix.sysctl` use; `ansible.posix` is still required for `firewalld`.
+
 ## [0.1.0] - Unreleased
 
 ### Added

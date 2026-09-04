@@ -1,14 +1,5 @@
 ---
 # Debian family (Ubuntu, Debian).
 
-# Rootless Podman. podman-docker provides the `docker` CLI shim that get.sh
-# and the bundle's install.sh call. uidmap provides newuidmap/newgidmap.
-# dbus-user-session is required for `systemctl --user` on headless servers.
-olakai_podman_packages:
-  - podman
-  - podman-docker
-  - uidmap
-  - dbus-user-session
-
 # Path get.docker.com installs the Docker CLI to on this family.
 olakai_docker_binary_path: /usr/bin/docker

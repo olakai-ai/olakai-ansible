@@ -2,8 +2,7 @@
 # Collections the olakai role needs on top of ansible.builtin.
 # Install with:  ansible-galaxy collection install -r requirements.yml
 #
-# ansible.posix     -> firewalld (roles/olakai/tasks/firewall.yml) and sysctl
-#                      (roles/olakai/tasks/runtime_podman_rootless.yml)
+# ansible.posix     -> firewalld (roles/olakai/tasks/firewall.yml)
 # community.general -> ufw (roles/olakai/tasks/firewall.yml)
 collections:
   - name: ansible.posix

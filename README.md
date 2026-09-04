@@ -2,23 +2,26 @@
 
 Ansible playbooks to install and upgrade [Olakai](https://olakai.ai) on-prem on one Linux host.
 
-The role is a thin wrapper. Ansible prepares the operating system (container runtime, service user, firewall ports). The Olakai scripts `get.sh` and `upgrade.sh` do the trust-bearing work: license handshake, bundle download, SHA256 and cosign verification, `.env` generation, and the container bring-up. This repository contains no product code.
+The role is a thin wrapper. Ansible checks the host, installs Docker when that is the chosen runtime, opens the firewall ports, and runs the Olakai scripts. `get.sh` and `upgrade.sh` do the trust-bearing work: license handshake, bundle download, SHA256 and cosign verification, `.env` generation, the container bring-up, and under rootless Podman the whole host preparation. This repository contains no product code.
 
 ## Installer compatibility (read first)
 
-> **This role requires `get.sh` 2026.09.03 or later.** It relies on three behaviours of that version: the `OLAKAI_LICENSE_KEY` environment variable, the `--force-overlay` flag, and the `OLAKAI_SETUP_URL=` line on stdout. Until `https://get.olakai.ai/get.sh` serves that version, the install task fails with `missing required input 'LICENSE_KEY'`. To review the role before then, point `olakai_get_sh_url` at a pre-release copy (an HTTPS URL, or a `file://` path on the target host) and pin it with `olakai_get_sh_sha256`.
+> **This role requires `get.sh` 2026.09.03 or later; 2026.09.03.2 or later for `olakai_runtime: podman-rootless`; 2026.09.04 or later for `olakai_env_overrides` and the private CA.** It relies on the `OLAKAI_LICENSE_KEY` environment variable, the `--force-overlay` flag, the `OLAKAI_SETUP_URL=` line on stdout, the `--runtime=podman-rootless` and `--service-user=` flags, and the `--env-file=` and `--private-ca=` flags. To review the role against a pre-release `get.sh`, point `olakai_get_sh_url` at a copy (an HTTPS URL, or a `file://` path on the target host) and pin it with `olakai_get_sh_sha256`.
 
 | Role version | Minimum get.sh | Minimum bundle | Notes |
 | --- | --- | --- | --- |
-| 0.1.0 (unreleased) | 2026.09.03 (`OLAKAI_LICENSE_KEY`, `--force-overlay`, `OLAKAI_SETUP_URL=` line) | 1.5.x (`upgrade.sh --yes --to=`) | Written against an installer change that is in progress. |
+| 0.2.0 (unreleased) | 2026.09.03.2 for `podman-rootless` (`--runtime=`, `--service-user=`); 2026.09.04 for `olakai_env_overrides` / private CA (`--env-file=`, `--private-ca=`) | 1.5.x for docker; 1.5.10 for `podman-rootless` | Rootless Podman delegated to the installer. Managed-state overrides. |
+| 0.1.0 (unreleased) | 2026.09.03 (`OLAKAI_LICENSE_KEY`, `--force-overlay`, `OLAKAI_SETUP_URL=` line) | 1.5.x (`upgrade.sh --yes --to=`) | Docker runtime only. |
 
 What the role expects from `get.sh`:
 
 1. `OLAKAI_LICENSE_KEY` in the environment is accepted instead of `--license-key=` (the flag wins when both are set).
 2. `--force-overlay` (or `OLAKAI_FORCE_OVERLAY=true`) proceeds when the install directory is not empty.
 3. A single line `OLAKAI_SETUP_URL=<url>` on stdout after a successful install. The line is present but empty when `get.sh` could not read the URL within 30 seconds or when `--quiet` is passed.
+4. `--runtime=podman-rootless --service-user=<name>` prepares the host for rootless Podman and runs the bundle as that user (2026.09.03.2 or later). The docker runtime is `get.sh`'s default and the role does not pass `--runtime=docker`, so docker installs keep working with 2026.09.03.
+5. `--env-file=<path>` merges a `KEY=VALUE` file into `.env` before the first bring-up, and `--private-ca=<path>` installs a PEM CA at `<install_dir>/certs/private-ca.pem` and activates the private-CA overlay (2026.09.04 or later).
 
-With an older `get.sh`: (1) the run fails with `missing required input 'LICENSE_KEY'`; (2) a non-empty install directory without `.env` aborts, so empty the directory first; (3) the role prints the `docker compose logs` command to retrieve the setup URL instead of writing the URL file.
+With an older `get.sh`: (1) the run fails with `missing required input 'LICENSE_KEY'`; (2) a non-empty install directory without `.env` aborts, so empty the directory first; (3) the role prints the `docker compose logs` command to retrieve the setup URL instead of writing the URL file; (4) and (5) fail with `unknown option`.
 
 ```yaml
 # group_vars/olakai.yml: review against a pre-release get.sh
@@ -32,15 +35,15 @@ Tagged releases of this repository track the on-prem bundle versions they were t
 
 `install.yml`:
 
-1. Preflight: Linux, x86_64 or aarch64, 8 GB RAM, `python3`, a distribution the installer accepts.
-2. Runtime: installs Docker Engine + Compose v2, or prepares rootless Podman (packages, service user, subordinate ids, linger, sysctl for ports 80/443, user-scope Podman socket). The rootless Podman path stops before `get.sh` today; see "Runtime choice".
+1. Preflight: Linux, x86_64 or aarch64, 8 GB RAM, `python3`, a distribution the installer accepts. Under `podman-rootless`: systemd, cgroup v2, user namespaces, `runuser`, and a pinned `olakai_version` of 1.5.10 or later.
+2. Runtime: installs Docker Engine + Compose v2 when the runtime is `docker`. Under `podman-rootless` the role installs nothing; `get.sh` prepares the host (see "Runtime choice").
 3. Firewall: opens TCP 80 and 443 in firewalld or ufw when one of them is present.
-4. Install: downloads `get.sh` into a root-only temporary directory, runs it non-interactively with the license key in its environment, writes the one-time setup URL to a `0600` file on the host, deletes the script.
+4. Install: downloads `get.sh` into a root-only temporary directory, runs it as root, non-interactively, with the license key in its environment, writes the one-time setup URL to a `0600` file on the host, deletes the script and its input files.
 
 `upgrade.yml`:
 
-1. Preflight (same checks).
-2. Runs `<install_dir>/upgrade.sh --yes --to=<version|latest>` and reports its verdict.
+1. Preflight (same checks). With `olakai_runtime: auto` the runtime is read from `<install_dir>/.olakai-runtime`.
+2. Runs `<install_dir>/upgrade.sh --yes --to=<version|latest>` and reports its verdict. Under rootless Podman it runs as the service user.
 
 ## Requirements
 
@@ -58,9 +61,10 @@ Target host:
 - Outbound HTTPS from the host to:
   - `get.olakai.ai` (installer) and `relay.olakai.ai` (license handshake, bundle download URL);
   - `public.ecr.aws` (container images);
-  - `github.com` and `objects.githubusercontent.com` (the cosign binary that `get.sh` bootstraps, and the Docker Compose binary the role downloads for Amazon Linux and rootless Podman);
+  - `github.com` and `objects.githubusercontent.com` (the cosign binary that `get.sh` bootstraps; the Docker Compose binary the role downloads for Amazon Linux; the `docker-compose` provider `get.sh` downloads under rootless Podman);
   - Sigstore, for online cosign verification: `rekor.sigstore.dev`, `fulcio.sigstore.dev`, `tuf-repo-cdn.sigstore.dev`. Not needed when `olakai_rekor_bundle` points at an offline bundle;
-  - `get.docker.com` and `download.docker.com` when Docker is auto-installed (`olakai_auto_install_docker: true`).
+  - `get.docker.com` and `download.docker.com` when Docker is auto-installed (`olakai_auto_install_docker: true`);
+  - the distribution's package repositories under rootless Podman (`get.sh` installs Podman with `dnf` or `apt-get`).
 - Inbound TCP 80 and 443 from the internet, open in your cloud security group. The role opens them on the host firewall only.
 
 ## Quick start
@@ -107,34 +111,88 @@ No license key is needed. `upgrade.sh` authenticates to the Olakai relay with th
 
 If Olakai marks a release as containing a destructive migration, `upgrade.sh` refuses to run it unattended. Read the release note, then set `olakai_accept_data_loss: true` for that one run. This gate is separate from `--yes` on purpose.
 
+With `olakai_runtime: auto` (the default) the upgrade playbook reads `<install_dir>/.olakai-runtime`, the marker `get.sh` writes under rootless Podman, so you do not repeat the runtime. Under rootless Podman it runs `upgrade.sh` as the service user, with that user's `XDG_RUNTIME_DIR` and D-Bus address, the same form `get.sh` prints in its banner (`cd /opt/olakai-onprem && sudo runuser -u olakai -- ./upgrade.sh --to=X.Y.Z`). The bundle refuses a root-run upgrade of a rootless deployment. An explicit `olakai_runtime` that contradicts the marker fails before `upgrade.sh` runs.
+
+Ansible becomes the unprivileged service user for that one task. On the RHEL family this works out of the box (`setfacl` is present). On a host without `acl`, enable pipelining (`ANSIBLE_PIPELINING=true`, or `pipelining = True` in `ansible.cfg`) so no temporary file has to change hands.
+
 ## Runtime choice
 
 `olakai_runtime` selects the container runtime.
 
 | Value | Behaviour |
 | --- | --- |
-| `auto` (default) | `docker` on every family (Ubuntu, Debian, RHEL, Rocky, AlmaLinux, CentOS Stream, Oracle Linux, Amazon Linux) until the installer accepts `--runtime=podman-rootless`. |
-| `docker` | Docker Engine 24+ with Compose v2. Installed from `get.docker.com` when missing and `olakai_auto_install_docker` is true (Amazon Linux uses the distro package; Oracle Linux is left to `get.sh`, which installs from Docker's CentOS package repository because `get.docker.com` rejects `ID=ol`). |
-| `podman-rootless` | Explicit opt-in. Prepared but not functional until the installer accepts `--runtime=podman-rootless`. The role installs Podman with the `podman-docker` shim and a standalone Compose v2 binary, creates an unprivileged `olakai` service user with subordinate ids, and sets `net.ipv4.ip_unprivileged_port_start=80`. Then it stops with a `fail`. |
+| `auto` (default) | Fresh install: `docker` on every family (Ubuntu, Debian, RHEL, Rocky, AlmaLinux, CentOS Stream, Oracle Linux, Amazon Linux). Upgrade: the runtime recorded in `<install_dir>/.olakai-runtime` (no marker means `docker`). |
+| `docker` | Docker Engine 24+ with Compose v2. Installed from `get.docker.com` when missing and `olakai_auto_install_docker` is true (Amazon Linux uses the distro package; Oracle Linux is left to `get.sh`, which installs from Docker's CentOS package repository because `get.docker.com` rejects `ID=ol`). The stack runs under the Docker daemon, as root. |
+| `podman-rootless` | Explicit opt-in. The role passes `--runtime=podman-rootless --service-user=<olakai_service_user>` to `get.sh`, which prepares the host and runs the bundle as an unprivileged service user. Needs `get.sh` 2026.09.03.2 or later and bundle 1.5.10 or later. |
 
-On Oracle Linux the role does not run `get.docker.com` (it rejects `ID=ol`). It delegates the Docker CE install to `get.sh --auto-install-docker`, which installs from Docker's CentOS package repository over HTTPS. Docker CE on Oracle Linux is community-supported: Docker does not list Oracle Linux as a supported platform for Docker Engine, and the CentOS packages are used as-is.
+On Oracle Linux the role does not run `get.docker.com` (it rejects `ID=ol`). It delegates the Docker CE install to `get.sh --auto-install-docker`, which installs from Docker's CentOS package repository over HTTPS. Docker CE on Oracle Linux is community-supported: Docker does not list Oracle Linux as a supported platform for Docker Engine, and the CentOS packages are used as-is. Oracle's supported runtime is Podman; see below.
 
-Why `podman-rootless` stops: `get.sh` does not accept a `--runtime=` flag yet (rootless Podman support in the Olakai installer is in progress), and no shipped `get.sh` can pass its own Docker check under the shim. With `podman-docker`, `docker --version` prints `podman version 5.x`; `get.sh` reads the third field as the Docker major version, sees `5 < 24` and dies with `Docker 24+ required`. On top of that, `install.yml` runs `get.sh` as root while `upgrade.yml` runs `upgrade.sh` as the service user, so file ownership does not line up until the installer owns the runtime switch. `olakai_allow_preview_runtime: true` skips the final `fail` for installer development only. When the installer ships the flag, pass it with `olakai_get_sh_extra_args: ["--runtime=podman-rootless"]`; the OS preparation is already what it expects.
+### Rootless Podman
 
-The default `olakai_subid_start` is 524288, not 100000. `useradd` gives the first interactive user (`ubuntu`, `opc`, `ec2-user`) the range `100000:65536`, and two users must never share a subordinate range. The role reads `/etc/subuid` and `/etc/subgid` and fails, naming the owner, when the chosen range overlaps any existing entry.
+The role does not prepare the host itself. `get.sh --runtime=podman-rootless` does, as root, and the role only checks the prerequisites first (systemd, cgroup v2, unprivileged user namespaces, `runuser`) so a host that cannot run rootless Podman fails with an Ansible error before anything is downloaded. What `get.sh` changes on the host, in order:
+
+1. Installs Podman 5 with the `podman-docker` shim from the distribution's signed repositories (`dnf`, or `apt-get` after checking that the candidate version is 5 or later; Ubuntu 24.04 ships Podman 4.9 and is refused). It refuses a host where Docker Engine is installed next to Podman.
+2. Installs `docker-compose` v5.5.1 at `/usr/local/bin/docker-compose`, pinned by SHA256, and names it as the compose provider in `/etc/containers/containers.conf.d/olakai-compose.conf`.
+3. Creates the service user (`useradd -r -m -s /bin/bash`, default name `olakai`, from `olakai_service_user`).
+4. Assigns the service user a free 65536-wide subordinate id range in `/etc/subuid` and `/etc/subgid`, starting at 524288 or above, after checking every existing entry for overlap. Two users that share a range can read and write each other's container files, which is why `get.sh` owns this step.
+5. Enables systemd linger for the service user, so its user units survive logout and reboot.
+6. Writes `/etc/sysctl.d/90-olakai.conf` with `net.ipv4.ip_unprivileged_port_start=80`, so the service user can bind ports 80 and 443 for Caddy.
+7. Enables the user-scope `podman.socket` and `podman-restart.service` of the service user.
+8. After the license handshake and the bundle extraction: writes the `.olakai-runtime` marker, activates the Podman compose overlay, hands `<install_dir>` to the service user (owner, mode `0750`), and runs the bundle's `install.sh` through `runuser -u <user>`.
+
+`get.sh` refuses to convert a deployment in place: an existing `.olakai-runtime` marker (or a `data/` tree from a Docker install that predates the marker) naming another runtime stops the run before the license key is consumed, and so does an install directory owned by another user than `olakai_service_user`.
+
+Bundle floor: rootless Podman needs bundle 1.5.10 or later. 1.5.9 introduced the Podman overlay but ships a support-bundle sidecar defect under rootless Podman, and earlier bundles have no Podman support. `get.sh` checks this after the handshake, when the license key is already consumed, so the role's preflight refuses a pinned `olakai_version` older than 1.5.10 first. Leave `olakai_version` empty for the latest release.
+
+Qualification: rootless Podman is qualified on Oracle Linux 9.8 (Podman 5.8.2). Other RHEL 9 family distributions ship the same Podman 5 and are accepted, not qualified. Debian and Ubuntu are not qualified; `get.sh` prints a warning there.
+
+Later bundle scripts (`upgrade.sh`, `support-bundle.sh`, `scripts/restore.sh`) must run as the service user, from the install directory: `cd /opt/olakai-onprem && sudo runuser -u olakai -- ./upgrade.sh --to=X.Y.Z`. `upgrade.yml` does this for you. Files you add later (`certs/private-ca.pem`, overlays) must be readable by the service user.
+
+Security: under rootless Podman a container escape yields the service user, not root. In-container root maps to the service user's subordinate uid range on the host. `net.ipv4.ip_unprivileged_port_start=80` is a host-wide setting: every unprivileged process on the host may then bind ports 80 to 1023, not only Caddy.
+
+## Managed state (customer-managed PostgreSQL, Redis, object storage)
+
+The bundled PostgreSQL, MinIO and Redis containers are convenient, not required. To run the stateless Olakai workloads only (`app`, `worker`, the one-shot `migrate` and `bootstrap` jobs, the support-bundle sidecar) against services you already operate, put the connection settings in `olakai_env_overrides`. The role writes them to a root-owned `0600` temporary file next to `get.sh` (with `no_log`), passes `--env-file=<path>`, and removes the file after the run. `get.sh` merges the keys into `.env` before the first bring-up; the bundle's `install.sh` then detects the topology, preflights the external settings, and skips the bundled containers and their `./data` directories. Needs `get.sh` 2026.09.04 or later. Any subset works: managed PostgreSQL alone, managed object storage alone, or all three.
+
+```yaml
+# group_vars/olakai.yml (keep the credentials in Ansible Vault)
+olakai_env_overrides:
+  DATABASE_URL: "postgresql://olakai:PASSWORD@db.example.com:5432/olakai?sslmode=verify-full"
+  REDIS_URL: "rediss://:PASSWORD@cache.example.com:6380"
+  OBJECT_STORAGE_KIND: s3                       # s3 or minio only
+  OBJECT_STORAGE_ENDPOINT: https://s3.us-east-1.amazonaws.com
+  OBJECT_STORAGE_REGION: us-east-1
+  OBJECT_STORAGE_BUCKET: customer-olakai-documents
+  OBJECT_STORAGE_ACCESS_KEY: AKIA...
+  OBJECT_STORAGE_SECRET_KEY: "..."
+  # OBJECT_STORAGE_FORCE_PATH_STYLE: "true"     # required for MinIO-compatible and OCI endpoints
+```
+
+Keys are upper-case identifiers and values are written verbatim, one per line, without quoting. The keys `get.sh` writes itself are refused by the role's preflight and by `get.sh`: `OLAKAI_DOMAIN`, `AUTH_URL`, `OLAKAI_ADMIN_EMAIL`, `OLAKAI_VERSION`, `OLAKAI_EMAIL_RELAY_KEY`, and the generated secrets (`NEXTAUTH_SECRET`, `AUTH_SECRET`, `DEFAULT_ENCRYPTION_KEY`, `NEXT_SERVER_ACTIONS_ENCRYPTION_KEY`, `ENCRYPTION_SALT`, `POSTGRES_PASSWORD`, `MINIO_ROOT_PASSWORD`, `REDIS_PASSWORD`, `OLAKAI_SUPPORT_BUNDLE_SECRET`).
+
+Two things to get right, from the bundle README. The failure mode is misleading: `migrate` succeeds and only then the app fails with a TLS error that looks like a database problem.
+
+- **Use DNS names, not IP addresses.** The PostgreSQL and Redis clients verify the hostname against the server certificate. A bare IP fails verification even when the CA is trusted and even when the certificate carries an IP SAN.
+- **Use `sslmode=verify-full` and supply the CA when it is not a public one.** The app connects through node-postgres and the `rediss://` client, which verify against Node's built-in roots, not the VM's system trust store; `update-ca-certificates` on the host does nothing for them. This affects corporate internal CAs and provider CAs such as Amazon RDS's `rds-ca-*`. Pass the CA in PEM form as `olakai_private_ca_pem` (text) or `olakai_private_ca_file` (a path on the control node). The role passes it as `--private-ca=<path>`; `get.sh` installs it at `<install_dir>/certs/private-ca.pem` and activates the private-CA compose overlay, in that order (the overlay before the file would hand every service a directory where a CA bundle belongs). Only if you cannot supply the CA, fall back to `?uselibpqcompat=true&sslmode=require`: encrypted, but the certificate is not verified, and the nightly `pg_dump` backup rejects that URL.
+
+```yaml
+olakai_private_ca_file: files/rds-ca.pem
+```
+
+On a managed-state deployment the database, the object storage bucket, Redis, their backups, private endpoints, DNS and TLS are customer-owned. The bundle's `backup.sh` covers the bundled containers only.
 
 ## Idempotency
 
-Run the install playbook twice and the second run reports zero changes. The guard is `<olakai_install_dir>/.env`: `get.sh` writes it on success, and the role does not download or run `get.sh` while it exists. The second run prints `.env exists: Olakai is already installed here` and touches nothing else; every task that reads the installer's output runs only when `get.sh` actually ran. OS preparation tasks (packages, users, sysctl, firewall rules) are native Ansible modules and converge on their own.
+Run the install playbook twice and the second run reports zero changes. The guard is `<olakai_install_dir>/.env`: `get.sh` writes it on success, and the role does not download or run `get.sh` while it exists. The second run prints `.env exists: Olakai is already installed here` and touches nothing else; every task that reads the installer's output runs only when `get.sh` actually ran. The Docker install and the firewall rules are native Ansible modules and converge on their own. Under rootless Podman, `get.sh` itself is re-run safe (existing packages, user, ranges and units are detected, not recreated).
 
 A failed install keeps its partial state in the install directory, as `get.sh` does. Fix the cause and run the playbook again. `get.sh` never overwrites an existing `.env`.
 
-To re-install on purpose (for example after `.env` was removed), remember that the install directory is not empty: `.olakai-setup-url` and the extracted bundle are still there. `get.sh` refuses a non-empty directory unless `olakai_force_overlay: true` (`--force-overlay`), or you empty the directory first.
+To re-install on purpose (for example after `.env` was removed), remember that the install directory is not empty: `.olakai-setup-url` and the extracted bundle are still there. `get.sh` refuses a non-empty directory unless `olakai_force_overlay: true` (`--force-overlay`), or you empty the directory first. Under rootless Podman a re-run must name the same `olakai_service_user`.
 
 ## What the playbook does not do
 
-- It does not re-implement the installer. The license handshake, the bundle download, the SHA256 and cosign checks, and the compose bring-up stay inside `get.sh` and `upgrade.sh`.
-- It does not migrate data between runtimes. Switching an existing Docker install to Podman (or back) is a manual procedure with Olakai support.
+- It does not re-implement the installer. The license handshake, the bundle download, the SHA256 and cosign checks, the compose bring-up, and the rootless Podman host preparation stay inside `get.sh` and `upgrade.sh`.
+- It does not migrate data between runtimes. Switching an existing Docker install to Podman (or back) is a backup, a fresh install on the new runtime, and a restore.
 - It does not install or enable a firewall. It only adds rules to firewalld or ufw when one is already there.
 - It does not manage DNS, TLS certificates, load balancers, or cloud security groups.
 - It does not run backups or restores. Use the bundle's own `backup.sh` and `restore.sh`.
@@ -147,13 +205,13 @@ For the installer itself, see Olakai's on-prem install documentation.
 - The license key is single-use. The relay rejects a second handshake with HTTP 409; the role reports that with a hint to contact Olakai sales.
 - The license key reaches `get.sh` through the `OLAKAI_LICENSE_KEY` environment variable, never as a command-line argument, so it is not visible in `ps` or in the Ansible task line.
 - The `get.sh` task runs with `no_log: true`. Ansible never records its command line or output. On failure a separate task prints the last lines of stderr with the license key replaced by `[redacted]`, and clears that text from host vars afterwards.
+- `olakai_env_overrides` holds database and object storage credentials. The task that writes them runs with `no_log: true`; the file is root-owned, mode `0600`, inside the root-only temporary directory, and is removed with `get.sh` after the run. `get.sh` copies the values into `<install_dir>/.env` (mode `0600`). Keep the dict in Ansible Vault.
 - The `OLAKAI_SETUP_URL` line is a one-time admin bootstrap token. The role writes it to `<olakai_install_dir>/.olakai-setup-url` (mode `0600`, owner `root`, or the service user under rootless Podman) and prints only the path. The URL is never stored in a fact, because a fact cache (jsonfile, redis, AWX) can persist `set_fact` values even with `no_log`. It appears in the play output, and so in the job log, only with `olakai_print_setup_url: true`. Delete the file after the first login.
-- `get.sh` and the get.docker.com script are downloaded into a root-only `mkdtemp` directory, not a fixed path under `/tmp`, so another local user cannot swap the file between download and run.
-- Docker auto-install runs the get.docker.com script as root. That script is not signature-verified; it extends the install's trust boundary to docker.com's HTTPS-served script. The role prints the same warning `get.sh` prints. The conservative option is `olakai_auto_install_docker: false` and Docker Engine 24+ with Compose v2 installed from Docker's signed package repositories before you run the playbook.
+- `get.sh`, its input files, and the get.docker.com script are downloaded into a root-only `mkdtemp` directory, not a fixed path under `/tmp`, so another local user cannot swap a file between download and run.
+- Docker auto-install runs the get.docker.com script as root. That script is not signature-verified; it extends the install's trust boundary to docker.com's HTTPS-served script. The role prints the same warning `get.sh` prints. The conservative option is `olakai_auto_install_docker: false` and Docker Engine 24+ with Compose v2 installed from Docker's signed package repositories before you run the playbook. Under rootless Podman there is no such step: `get.sh` installs Podman from the distribution's signed repositories.
 - Keep `olakai_license_key` in Ansible Vault. `group_vars/olakai.yml` is git-ignored in this repository.
 - `olakai_skip_verify` disables all cosign verification. Use it only for air-gapped installs where you verified the bundle out of band.
-- Under rootless Podman, `net.ipv4.ip_unprivileged_port_start=80` is a host-wide setting: every unprivileged process on the host may then bind ports 80 to 1023, not only Caddy. Once the installer supports it, the alternative is Caddy on 8080/8443 behind a customer load balancer with `olakai_unprivileged_port_start` left unset (`""`), which leaves the kernel default of 1024 in place.
-- Under rootless Podman, in-container root maps to the unprivileged `olakai` user on the host. The support-bundle sidecar's Podman socket mount grants that user's rights only, not host root.
+- Under rootless Podman a container escape yields the service user, not root. In-container root maps to the unprivileged service user on the host. The support-bundle sidecar's Podman socket mount grants that user's rights only, not host root. `net.ipv4.ip_unprivileged_port_start=80` is host-wide: every unprivileged process on the host may then bind ports 80 to 1023.
 
 ## Variables
 
