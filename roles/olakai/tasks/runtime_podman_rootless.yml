@@ -66,26 +66,32 @@
       (need > 0). Set user.max_user_namespaces with sysctl or use
       olakai_runtime: docker.
 
+# util-linux installs runuser in /usr/sbin on the RHEL family and in
+# /usr/sbin (with a /usr/bin symlink on merged-usr) on Debian and Ubuntu;
+# either location satisfies get.sh, which looks it up with `command -v`.
 - name: Check for runuser (get.sh hands the bundle to the service user with it)
   ansible.builtin.stat:
-    path: /usr/sbin/runuser
+    path: "{{ item }}"
+  loop:
+    - /usr/sbin/runuser
+    - /usr/bin/runuser
   register: olakai_runuser_stat
 
 - name: Assert runuser is present
   ansible.builtin.assert:
     that:
-      - olakai_runuser_stat.stat.exists
+      - olakai_runuser_stat.results | map(attribute='stat.exists') | select | list | length > 0
     fail_msg: >-
-      /usr/sbin/runuser not found. get.sh runs the bundle as
+      runuser not found in /usr/sbin or /usr/bin. get.sh runs the bundle as
       {{ olakai_service_user }} with runuser (package util-linux). Install it
       and re-run, or use olakai_runtime: docker.
 
-- name: Note the qualification status of this distribution
+- name: Note the validation status of this distribution
   ansible.builtin.debug:
     msg: >-
-      Rootless Podman is qualified on Oracle Linux 9.8 (Podman 5.8.2). Other
+      Rootless Podman is validated on Oracle Linux 9.8 (Podman 5.8.2). Other
       RHEL 9 family distributions ship the same Podman 5 and are accepted, not
-      qualified. Debian and Ubuntu are not qualified: get.sh installs Podman
+      validated. Debian and Ubuntu are not validated: get.sh installs Podman
       from the distro repository only when it offers Podman 5 or newer
       (Ubuntu 24.04 ships 4.9 and is refused), and prints a warning.
       This host: {{ ansible_distribution }} {{ ansible_distribution_version }}.

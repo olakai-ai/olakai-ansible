@@ -114,20 +114,21 @@
         force: true
 
     # KEY='VALUE', one per line, the format get.sh merges into .env. Every
-    # value is single-quoted, with an embedded ' written as '\'' (close,
-    # escaped quote, reopen; one backslash in the source, because Ansible
-    # keeps backslashes in Jinja string literals as they are). .env is read
-    # three ways: install.sh sources it with bash, compose interpolates it,
-    # and the bundle's env reader parses it back; only a single-quoted value
-    # is the same literal to all three (an unquoted pa$w0rd sources as "pa").
-    # The preflight checked that every value is a string; a vaulted value
-    # decrypts here. Written by root (the play's become), mode 0600, inside
-    # the root-only 0700 directory.
+    # value is single-quoted. .env is read three ways: install.sh sources it
+    # with bash, compose interpolates it, and the bundle's env reader parses
+    # it back. A single-quoted value is identical for all three when it
+    # contains $, whitespace, a backtick or ` #` (an unquoted pa$w0rd sources
+    # as "pa"). A value with a ' has no form all three accept (bash's '\''
+    # makes compose reject the whole .env: "unexpected character \ in
+    # variable name"), so the preflight refuses it. The preflight also
+    # checked that every value is a string; a vaulted value decrypts here.
+    # Written by root (the play's become), mode 0600, inside the root-only
+    # 0700 directory.
     - name: Write the .env overrides file for get.sh --env-file
       ansible.builtin.copy:
         content: |
           {% for key in olakai_env_overrides.keys() | sort -%}
-          {{ key }}='{{ olakai_env_overrides[key] | string | replace("'", "'\''") }}'
+          {{ key }}='{{ olakai_env_overrides[key] | string }}'
           {% endfor %}
         dest: "{{ olakai_get_sh_tmpdir.path }}/env-overrides"
         mode: "0600"
@@ -203,9 +204,12 @@
     # and the bundle's preflight may echo a managed-state value (a DATABASE_URL
     # with its password, on a connection failure), so the tail is redacted
     # before any task prints it: the license key and every value of
-    # olakai_env_overrides are replaced, longest first so a value that
-    # contains another one is covered whole. Empty strings are dropped
-    # first: str.replace('', x) would insert x between every character.
+    # olakai_env_overrides of 8 characters or more are replaced, longest
+    # first so a value that contains another one is covered whole. A
+    # shorter value (s3, us-east-1's kind, a port) is not a secret and would
+    # shred the tail ("s3.amazonaws.com" -> "[redacted].amazonaws.com").
+    # Empty strings are dropped: str.replace('', x) would insert x between
+    # every character.
     # The two booleans describe the OLAKAI_SETUP_URL= line without storing
     # the URL: get.sh 2026.09.03+ always prints the line, and prints it empty
     # when the URL could not be read within 30 s or --quiet was passed.
@@ -213,7 +217,9 @@
       ansible.builtin.set_fact:
         olakai_install_error_tail: >-
           {%- set ns = namespace(tail=(olakai_install_result.stderr_lines | default([]))[-15:] | join('\n')) -%}
-          {%- set secrets = ([olakai_license_key] + (olakai_env_overrides.values() | map('string') | list)) | select | list -%}
+          {%- set values = olakai_env_overrides.values() | map('string') | select | list -%}
+          {%- set long_values = values | map('length') | zip(values) | selectattr(0, '>=', 8) | map(attribute=1) | list -%}
+          {%- set secrets = ([olakai_license_key] | select | list) + long_values -%}
           {%- for pair in secrets | map('length') | zip(secrets) | sort(reverse=true) -%}
           {%- set ns.tail = ns.tail | replace(pair[1], '[redacted]') -%}
           {%- endfor -%}
