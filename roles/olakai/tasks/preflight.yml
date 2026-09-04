@@ -57,12 +57,37 @@
       python3 is not on PATH. get.sh needs it to parse the license handshake.
       Install it with the distro package manager (python3) and re-run.
 
-# auto resolves to docker on every family until the installer accepts
-# --runtime=podman-rootless. podman-rootless is explicit opt-in and stops
-# with a fail after the OS preparation (see runtime_podman_rootless.yml).
+# Runtime resolution.
+#
+# install: auto resolves to docker on every family. podman-rootless is
+# explicit opt-in (get.sh --runtime=podman-rootless).
+#
+# upgrade: auto reads <olakai_install_dir>/.olakai-runtime, the marker
+# get.sh writes under podman-rootless (bundle 1.5.9 or later). The operator
+# does not have to repeat the runtime on every upgrade run. No marker means
+# docker. The first non-blank, non-comment line counts, as in get.sh and the
+# bundle's scripts/lib/compose-files.sh.
+- name: Read the runtime marker (.olakai-runtime) of an existing install
+  ansible.builtin.slurp:
+    src: "{{ olakai_install_dir }}/.olakai-runtime"
+  register: olakai_runtime_marker
+  failed_when: false
+  when: olakai_action == 'upgrade'
+
+# Always a string: an empty string when there is no marker (ansible-core
+# 2.19 turns a template that renders nothing into null).
+- name: Resolve the runtime recorded on the host
+  ansible.builtin.set_fact:
+    olakai_runtime_on_host: >-
+      {{ (((olakai_runtime_marker.content | b64decode).splitlines()
+           | map('trim') | reject('match', '^(#|$)') | list) + ['']) | first
+         if olakai_runtime_marker.content is defined else '' }}
+
 - name: Resolve olakai_runtime from auto
   ansible.builtin.set_fact:
-    olakai_runtime_resolved: "{{ 'docker' if olakai_runtime == 'auto' else olakai_runtime }}"
+    olakai_runtime_resolved: >-
+      {{ olakai_runtime if olakai_runtime != 'auto'
+         else (olakai_runtime_on_host if olakai_runtime_on_host | length > 0 else 'docker') }}
 
 - name: Assert the resolved runtime is valid
   ansible.builtin.assert:
@@ -70,7 +95,59 @@
       - olakai_runtime_resolved in ['docker', 'podman-rootless']
     fail_msg: >-
       olakai_runtime must be 'auto', 'docker' or 'podman-rootless'
-      (got '{{ olakai_runtime }}').
+      (got '{{ olakai_runtime }}'{{ (', and ' ~ olakai_install_dir ~ "/.olakai-runtime says '" ~ olakai_runtime_on_host ~ "'")
+      if (olakai_runtime == 'auto' and olakai_runtime_on_host | length > 0) else '' }}).
+
+# upgrade.sh must run as the owner of the deployment: the bundle refuses a
+# root-run upgrade of a rootless deployment, and a service-user run of a
+# Docker deployment cannot read root's .env. The role never moves a
+# deployment between runtimes.
+- name: Assert olakai_runtime matches the deployment on the host (upgrade)
+  ansible.builtin.assert:
+    that:
+      - >-
+        olakai_runtime_resolved
+        == (olakai_runtime_on_host if olakai_runtime_on_host | length > 0 else 'docker')
+    fail_msg: >-
+      olakai_runtime resolves to '{{ olakai_runtime_resolved }}' but the
+      deployment in {{ olakai_install_dir }} runs under
+      '{{ olakai_runtime_on_host if olakai_runtime_on_host | length > 0 else 'docker' }}'
+      ({{ '.olakai-runtime marker' if olakai_runtime_on_host | length > 0 else 'no .olakai-runtime marker' }}).
+      Set olakai_runtime: auto so the role follows the marker. Switching
+      runtimes is a backup, fresh install and restore, not an upgrade.
+  when: olakai_action == 'upgrade'
+
+- name: Assert the service user name is one get.sh accepts (podman-rootless)
+  ansible.builtin.assert:
+    that:
+      - olakai_service_user is match('^[a-z_][a-z0-9_-]{0,31}$')
+      - olakai_service_user != 'root'
+    fail_msg: >-
+      olakai_service_user '{{ olakai_service_user }}' is not a valid
+      unprivileged user name for get.sh --service-user (lowercase letters,
+      digits, '_' and '-', 32 characters at most, not root).
+  when: olakai_runtime_resolved == 'podman-rootless'
+
+# get.sh consumes the license key at the handshake and only then learns the
+# bundle version, so a too-old pin burns the key. The role checks the pin
+# first. 1.5.9 introduced the Podman overlay but ships a support-bundle
+# sidecar defect under rootless Podman; 1.5.10 is the floor get.sh enforces.
+- name: Assert the pinned bundle version supports rootless Podman
+  ansible.builtin.assert:
+    that:
+      - >-
+        (olakai_version | regex_replace('^v', ''))
+        is version(olakai_rootless_min_bundle_version, '>=')
+    fail_msg: >-
+      olakai_version is '{{ olakai_version }}' but olakai_runtime
+      podman-rootless needs bundle {{ olakai_rootless_min_bundle_version }}
+      or later (1.5.9 has a support-bundle sidecar defect under rootless
+      Podman; earlier bundles have no Podman support). Leave olakai_version
+      empty for the latest release, or pin v{{ olakai_rootless_min_bundle_version }}
+      or later.
+  when:
+    - olakai_runtime_resolved == 'podman-rootless'
+    - (olakai_version | regex_replace('^v', '')) is match('^[0-9]+\.[0-9]+')
 
 - name: Assert required inputs are set
   ansible.builtin.assert:
@@ -92,12 +169,66 @@
     quiet: true
   when: olakai_action == 'install'
 
+# --env-file: get.sh merges the file into .env before the first bring-up and
+# refuses the keys it writes itself. The role checks the same list first so
+# the run fails before the license key is consumed.
+- name: Assert olakai_env_overrides is well formed (install only)
+  ansible.builtin.assert:
+    that:
+      - olakai_env_overrides is mapping
+      - olakai_env_overrides.keys() | reject('match', '^[A-Z][A-Z0-9_]*$') | list | length == 0
+      - olakai_env_overrides.keys() | list | intersect(olakai_env_keys_owned_by_get_sh) | length == 0
+      - olakai_env_overrides.values() | map('string') | select('search', '[\r\n]') | list | length == 0
+    fail_msg: >-
+      olakai_env_overrides must be a dict of KEY: value. Keys are upper-case
+      identifiers (A-Z, 0-9, _), values are single lines, and the keys get.sh
+      writes itself are refused: {{ olakai_env_keys_owned_by_get_sh | join(', ') }}.
+      Offending keys: {{ (olakai_env_overrides.keys() | reject('match', '^[A-Z][A-Z0-9_]*$') | list
+        + (olakai_env_overrides.keys() | list | intersect(olakai_env_keys_owned_by_get_sh))) | join(', ') }}.
+    quiet: true
+  when: olakai_action == 'install'
+
+- name: Assert at most one private CA source is set (install only)
+  ansible.builtin.assert:
+    that:
+      - not (olakai_private_ca_pem | length > 0 and olakai_private_ca_file | length > 0)
+    fail_msg: >-
+      Set olakai_private_ca_pem (PEM text) or olakai_private_ca_file (a path
+      on the control node), not both.
+  when: olakai_action == 'install'
+
+- name: Resolve the private CA content (install only)
+  ansible.builtin.set_fact:
+    olakai_private_ca_content: >-
+      {{ olakai_private_ca_pem if olakai_private_ca_pem | length > 0
+         else (lookup('ansible.builtin.file', olakai_private_ca_file) if olakai_private_ca_file | length > 0 else '') }}
+  when: olakai_action == 'install'
+
+- name: Assert the private CA is PEM (install only)
+  ansible.builtin.assert:
+    that:
+      - olakai_private_ca_content is search('-----BEGIN CERTIFICATE-----')
+      - olakai_private_ca_content is search('-----END CERTIFICATE-----')
+    fail_msg: >-
+      The private CA must be one or more PEM certificates
+      (-----BEGIN CERTIFICATE----- blocks). DER, PKCS#7 and PKCS#12 are not
+      accepted; convert with openssl first.
+  when:
+    - olakai_action == 'install'
+    - olakai_private_ca_content | length > 0
+
 - name: Show the resolved plan
   ansible.builtin.debug:
     msg:
       - "action: {{ olakai_action }}"
       - "host: {{ ansible_distribution }} {{ ansible_distribution_version }} ({{ ansible_architecture }})"
-      - "runtime: {{ olakai_runtime_resolved }}"
+      - >-
+        runtime: {{ olakai_runtime_resolved
+          ~ ((' (from ' ~ olakai_install_dir ~ '/.olakai-runtime)') if (olakai_runtime == 'auto' and olakai_runtime_on_host | length > 0) else '')
+          ~ ((', service user ' ~ olakai_service_user) if olakai_runtime_resolved == 'podman-rootless' else '') }}
       - "domain: {{ olakai_domain }}"
       - "install_dir: {{ olakai_install_dir }}"
       - "version: {{ olakai_version if olakai_version else 'latest' }}"
+      - >-
+        env overrides: {{ ((olakai_env_overrides.keys() | sort | join(', ')) if olakai_env_overrides | length > 0 else 'none')
+          ~ (', private CA: yes' if olakai_private_ca_content | default('') | length > 0 else ', private CA: none') }}

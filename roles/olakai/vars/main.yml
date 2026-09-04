@@ -26,9 +26,35 @@ olakai_accepted_distros_human: >-
 # the role checks a little lower so it never rejects a VM get.sh accepts.
 olakai_min_memtotal_mb: 7000
 
-# Standalone Docker Compose v2 binary used by the podman-rootless runtime
-# (podman compose delegates to it) and by Amazon Linux (no compose plugin in
-# the distro repos). Pinned by version and SHA256.
+# Oldest bundle that runs under rootless Podman. get.sh enforces the same
+# floor, but only after the license handshake has consumed the key; the
+# role's preflight checks a pinned olakai_version before that.
+olakai_rootless_min_bundle_version: "1.5.10"
+
+# .env keys get.sh writes itself (materialize_env). get.sh --env-file
+# refuses them; the preflight refuses them first. Everything else
+# (DATABASE_URL, REDIS_URL, OBJECT_STORAGE_*, ...) may be overridden.
+olakai_env_keys_owned_by_get_sh:
+  - NEXTAUTH_SECRET
+  - AUTH_SECRET
+  - DEFAULT_ENCRYPTION_KEY
+  - NEXT_SERVER_ACTIONS_ENCRYPTION_KEY
+  - ENCRYPTION_SALT
+  - POSTGRES_PASSWORD
+  - MINIO_ROOT_PASSWORD
+  - REDIS_PASSWORD
+  - OLAKAI_SUPPORT_BUNDLE_SECRET
+  - OLAKAI_DOMAIN
+  - AUTH_URL
+  - OLAKAI_ADMIN_EMAIL
+  - OLAKAI_EMAIL_RELAY_KEY
+  - OLAKAI_VERSION
+
+# Standalone Docker Compose v2 binary for Amazon Linux under the docker
+# runtime (no compose plugin in the distro repos). Pinned by version and
+# SHA256. Under podman-rootless, get.sh installs its own pinned copy at
+# /usr/local/bin/docker-compose and registers it as the Podman compose
+# provider; the role does not touch it.
 # Source: https://github.com/docker/compose/releases/tag/v5.5.1
 # Checksums fetched 2026-09-03 from the release's
 # docker-compose-linux-<arch>.sha256 assets.
@@ -39,7 +65,6 @@ olakai_compose_sha256:
 olakai_compose_url: >-
   https://github.com/docker/compose/releases/download/{{ olakai_compose_version }}/docker-compose-linux-{{ ansible_architecture }}
 olakai_compose_plugin_path: /usr/local/lib/docker/cli-plugins/docker-compose
-olakai_compose_bin_path: /usr/local/bin/docker-compose
 
 # Where install.yml stores the one-time setup URL get.sh printed (mode 0600).
 # Kept next to .env so it shares the install directory's ownership and is

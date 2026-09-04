@@ -6,6 +6,20 @@
 # upgrade.sh already does: sha256 + cosign verification, destructive-migration
 # preflight, pre-upgrade backup, overlay, pull, migrate gate, health gate and
 # automatic rollback. The role only calls it and reads its verdict.
+#
+# Runtime: olakai_runtime_resolved comes from preflight.yml. With
+# olakai_runtime: auto it follows the <olakai_install_dir>/.olakai-runtime
+# marker get.sh wrote, so the operator does not repeat the runtime here.
+#
+# Rootless Podman: the stack belongs to the service user and root has no
+# containers, so upgrade.sh runs as that user, the way the get.sh banner
+# says (cd <install_dir> && sudo runuser -u <user> -- ./upgrade.sh --to=X).
+# The bundle refuses a root-run upgrade of a rootless deployment. Ansible
+# becomes the service user directly and passes XDG_RUNTIME_DIR and the D-Bus
+# address, which `systemctl --user` and the Podman socket lookup key on and
+# which a become shell does not set. Becoming an unprivileged user needs
+# Ansible's temporary-file hand-over (setfacl, present on the RHEL family)
+# or pipelining; see README "Upgrades".
 
 - name: Check for an existing install (.env)
   ansible.builtin.stat:
@@ -33,6 +47,24 @@
       {{ olakai_install_dir }}/upgrade.sh not found. The installed bundle is
       too old for unattended upgrades. Contact support@olakai.ai.
 
+- name: Resolve the service user's uid (podman-rootless)
+  ansible.builtin.getent:
+    database: passwd
+    key: "{{ olakai_service_user }}"
+    fail_key: false
+  when: olakai_runtime_resolved == 'podman-rootless'
+
+- name: Assert the service user exists (podman-rootless)
+  ansible.builtin.assert:
+    that:
+      - ansible_facts.getent_passwd[olakai_service_user] is not none
+    fail_msg: >-
+      {{ olakai_install_dir }} runs under rootless Podman but the service user
+      '{{ olakai_service_user }}' does not exist on this host. Set
+      olakai_service_user to the account that owns {{ olakai_install_dir }}
+      (ls -ld {{ olakai_install_dir }}).
+  when: olakai_runtime_resolved == 'podman-rootless'
+
 - name: Build the upgrade.sh argument list
   ansible.builtin.set_fact:
     olakai_upgrade_sh_args: >-
@@ -46,10 +78,24 @@
         + (['--skip-verify'] if olakai_skip_verify | bool else [])
         + olakai_upgrade_sh_extra_args
       }}
-    # Under rootless Podman the compose state belongs to the service user, so
-    # upgrade.sh must run as that user. Under Docker it runs as root.
     olakai_upgrade_user: >-
       {{ olakai_service_user if olakai_runtime_resolved == 'podman-rootless' else 'root' }}
+    # getent_passwd[user] is [password, uid, gid, gecos, home, shell].
+    olakai_upgrade_env: >-
+      {%- if olakai_runtime_resolved == 'podman-rootless' -%}
+        {%- set uid = ansible_facts.getent_passwd[olakai_service_user][1] -%}
+        {{ {'XDG_RUNTIME_DIR': '/run/user/' ~ uid,
+            'DBUS_SESSION_BUS_ADDRESS': 'unix:path=/run/user/' ~ uid ~ '/bus'} }}
+      {%- else -%}
+        {{ {} }}
+      {%- endif -%}
+
+- name: Show how upgrade.sh will run
+  ansible.builtin.debug:
+    msg: >-
+      {{ 'cd ' ~ olakai_install_dir ~ ' && '
+         ~ ('sudo runuser -u ' ~ olakai_upgrade_user ~ ' -- ' if olakai_upgrade_user != 'root' else 'sudo ')
+         ~ './upgrade.sh ' ~ (olakai_upgrade_sh_args | join(' ')) }}
 
 # No secret is involved here: upgrade.sh reads the deployment bearer from
 # .env itself and does not echo it, so its output can be shown.
@@ -59,6 +105,7 @@
     chdir: "{{ olakai_install_dir }}"
   become: true
   become_user: "{{ olakai_upgrade_user }}"
+  environment: "{{ olakai_upgrade_env }}"
   register: olakai_upgrade_result
   changed_when: "'UPGRADE COMPLETE' in (olakai_upgrade_result.stdout | default(''))"
   failed_when: false

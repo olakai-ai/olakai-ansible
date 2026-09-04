@@ -5,6 +5,13 @@
 # successful install. When it exists the role skips the download and the run,
 # so a second playbook run reports zero changes.
 #
+# Runtime: get.sh runs as root under both runtimes. Under
+# --runtime=podman-rootless it prepares the OS as root (packages, compose
+# provider, service user, subordinate ids, linger, sysctl, user units), then
+# hands the extracted bundle to the service user and runs install.sh through
+# runuser itself. The play's become: true is all it needs; become_user must
+# stay root for this task.
+#
 # Secrets: the license key reaches get.sh only through the OLAKAI_LICENSE_KEY
 # environment variable (never argv, so it is not visible in `ps` or in the
 # Ansible task line). The task runs with no_log so neither the command nor
@@ -15,6 +22,14 @@
 # redis, AWX) even with no_log, so the copy task reads the registered stdout
 # directly. The redacted stderr tail is the only intermediate fact and it is
 # cleared at the end.
+#
+# --env-file / --private-ca (get.sh 2026.09.04 or later): both files are
+# written into the same root-only temporary directory as get.sh and removed
+# with it in the always: section. The env overrides file holds managed-state
+# credentials (DATABASE_URL, REDIS_URL, OBJECT_STORAGE_SECRET_KEY), so that
+# copy task runs with no_log. get.sh merges it into .env before the first
+# bring-up and refuses the keys it writes itself (preflight.yml checks the
+# same list first, before the license key is consumed).
 #
 # Check mode: the download and the run are skipped (a `command` task with
 # `creates:` would report changed: true in check mode without running, and
@@ -37,6 +52,10 @@
     path: "{{ olakai_install_dir }}/.env"
   register: olakai_env_stat
 
+# --runtime=docker is get.sh's default and is not passed, so the docker path
+# keeps working with a get.sh older than 2026.09.03.2. --auto-install-docker
+# only makes sense under docker. --env-file and --private-ca are appended at
+# run time because they point into the temporary directory.
 - name: Build the get.sh argument list
   ansible.builtin.set_fact:
     olakai_get_sh_args: >-
@@ -47,6 +66,8 @@
           '--admin-email=' ~ olakai_admin_email,
           '--install-dir=' ~ olakai_install_dir
         ]
+        + (['--runtime=podman-rootless', '--service-user=' ~ olakai_service_user]
+           if olakai_runtime_resolved == 'podman-rootless' else [])
         + (['--version=' ~ olakai_version] if olakai_version else [])
         + (['--no-tls'] if olakai_no_tls | bool else [])
         + (['--skip-verify'] if olakai_skip_verify | bool else [])
@@ -61,6 +82,12 @@
     # belong to the service user. Under Docker everything is root's.
     olakai_install_owner: >-
       {{ olakai_service_user if olakai_runtime_resolved == 'podman-rootless' else 'root' }}
+    # How to read the bootstrap log on the host: as root under Docker, as the
+    # service user under rootless Podman (root has no containers there).
+    olakai_compose_logs_hint: >-
+      cd {{ olakai_install_dir }} &&
+      {{ 'sudo runuser -u ' ~ olakai_service_user ~ ' -- ' if olakai_runtime_resolved == 'podman-rootless' else 'sudo ' -}}
+      docker compose logs bootstrap | grep "Setup URL"
   when: not olakai_env_stat.stat.exists
 
 - name: Report check mode
@@ -89,21 +116,42 @@
         mode: "0700"
         force: true
 
-    # get.sh must run as root (it prepares the OS, then hands off to the
-    # bundle's install.sh). The play already runs with become: true.
+    # KEY=VALUE, one per line, values verbatim (no quoting), the format
+    # get.sh merges into .env. Written by root (the play's become), mode
+    # 0600, inside the root-only 0700 directory.
+    - name: Write the .env overrides file for get.sh --env-file
+      ansible.builtin.copy:
+        content: |
+          {% for key in olakai_env_overrides.keys() | sort -%}
+          {{ key }}={{ olakai_env_overrides[key] }}
+          {% endfor %}
+        dest: "{{ olakai_get_sh_tmpdir.path }}/env-overrides"
+        mode: "0600"
+      no_log: true
+      when: olakai_env_overrides | length > 0
+
+    # A CA certificate is public. get.sh copies it to
+    # <install_dir>/certs/private-ca.pem and activates the private-CA overlay.
+    - name: Write the private CA file for get.sh --private-ca
+      ansible.builtin.copy:
+        content: "{{ olakai_private_ca_content }}"
+        dest: "{{ olakai_get_sh_tmpdir.path }}/private-ca.pem"
+        mode: "0644"
+      when: olakai_private_ca_content | length > 0
+
+    # get.sh must run as root under both runtimes (see the header).
     # CI=true makes get.sh strictly non-interactive even if a tty leaks in.
-    # NOTE: `--runtime=` is not a get.sh flag yet (rootless Podman support in
-    # the Olakai installer is in progress). runtime_podman_rootless.yml fails
-    # before this task unless olakai_allow_preview_runtime is true. With it,
-    # get.sh runs here as root against the podman-docker shim while
-    # upgrade.yml runs upgrade.sh as the service user, so file ownership
-    # does not line up until the installer owns the runtime switch. Pass the
-    # flag via olakai_get_sh_extra_args once the installer ships it.
     # failed_when: false keeps the play alive on a non-zero exit so the tasks
     # below can report a redacted reason instead of a censored no_log result.
     - name: Run get.sh (output hidden, the license key is in its environment)  # noqa: no-changed-when
       ansible.builtin.command:
-        argv: "{{ ['bash', olakai_get_sh_tmpdir.path ~ '/get.sh'] + olakai_get_sh_args }}"
+        argv: >-
+          {{ ['bash', olakai_get_sh_tmpdir.path ~ '/get.sh']
+             + olakai_get_sh_args
+             + (['--env-file=' ~ olakai_get_sh_tmpdir.path ~ '/env-overrides']
+                if olakai_env_overrides | length > 0 else [])
+             + (['--private-ca=' ~ olakai_get_sh_tmpdir.path ~ '/private-ca.pem']
+                if olakai_private_ca_content | length > 0 else []) }}
         creates: "{{ olakai_install_dir }}/.env"
       environment:
         OLAKAI_LICENSE_KEY: "{{ olakai_license_key }}"
@@ -113,8 +161,9 @@
       failed_when: false
   always:
     # Runs after the block whether the command ran, failed, or was skipped by
-    # `creates:`. Skipped when the directory was never created.
-    - name: Remove the temporary directory with get.sh
+    # `creates:`. Removes get.sh, the env overrides file and the CA file.
+    # Skipped when the directory was never created.
+    - name: Remove the temporary directory with get.sh and its input files
       ansible.builtin.file:
         path: "{{ olakai_get_sh_tmpdir.path }}"
         state: absent
@@ -210,6 +259,11 @@
           - >-
             The URL is not printed here because it is a one-time admin token and this
             output is kept in the job log. Set olakai_print_setup_url: true to print it anyway.
+          - >-
+            {{ ('Rootless Podman: the stack belongs to ' ~ olakai_service_user ~ '. Run every later bundle script as that user: '
+                ~ 'cd ' ~ olakai_install_dir ~ ' && sudo runuser -u ' ~ olakai_service_user ~ ' -- ./upgrade.sh --to=X.Y.Z '
+                ~ '(upgrade.yml does this for you).')
+               if olakai_runtime_resolved == 'podman-rootless' else 'Runtime: docker.' }}
       when: olakai_setup_url_present | bool
 
     - name: Show the setup URL (olakai_print_setup_url is true)
@@ -235,8 +289,7 @@
           - >-
             get.sh did not print an OLAKAI_SETUP_URL= line. This get.sh is older than
             2026.09.03 (see README "Installer compatibility"). Retrieve the fallback
-            URL on the host with:
-            cd {{ olakai_install_dir }} && docker compose logs bootstrap | grep "Setup URL"
+            URL on the host with: {{ olakai_compose_logs_hint }}
       when: not olakai_setup_url_line_present | bool
 
     - name: Show how to retrieve the setup URL (OLAKAI_SETUP_URL line is empty)
@@ -248,7 +301,7 @@
             get.sh printed an empty OLAKAI_SETUP_URL= line: the bootstrap container had
             not logged the URL within 30 seconds, or --quiet was passed through
             olakai_get_sh_extra_args. Retrieve the fallback URL on the host with:
-            cd {{ olakai_install_dir }} && docker compose logs bootstrap | grep "Setup URL"
+            {{ olakai_compose_logs_hint }}
       when:
         - olakai_setup_url_line_present | bool
         - not olakai_setup_url_present | bool

@@ -16,10 +16,14 @@ olakai_license_key: !vault |
   $ANSIBLE_VAULT;1.1;AES256
   REPLACE_WITH_THE_OUTPUT_OF_ansible-vault_encrypt_string
 
-# Container runtime. auto = Docker on every family until the installer
-# accepts --runtime=podman-rootless. podman-rootless is explicit opt-in and
-# is prepared but not functional. See README "Runtime choice".
+# Container runtime. auto = Docker on a fresh install; on an upgrade, auto
+# follows the runtime recorded in <olakai_install_dir>/.olakai-runtime.
+# podman-rootless is explicit opt-in (get.sh --runtime=podman-rootless,
+# bundle 1.5.10 or later). See README "Runtime choice".
 olakai_runtime: auto
+
+# podman-rootless only. Unprivileged user that owns the stack.
+# olakai_service_user: olakai
 
 # Bundle version to install or upgrade to. Empty = latest servable release.
 olakai_version: ""
@@ -33,3 +37,20 @@ olakai_manage_firewall: true
 # Upgrade only. Set to true when Olakai tells you a release contains a
 # destructive migration and you accept it. Maps to upgrade.sh --accept-data-loss.
 olakai_accept_data_loss: false
+
+# Install only. Managed state: customer-managed PostgreSQL, Redis and object
+# storage instead of the bundled containers. Needs get.sh 2026.09.04 or
+# later. Keep the credentials in Ansible Vault. See README "Managed state".
+# olakai_env_overrides:
+#   DATABASE_URL: "postgresql://olakai:PASSWORD@db.example.com:5432/olakai?sslmode=verify-full"
+#   REDIS_URL: "rediss://:PASSWORD@cache.example.com:6380"
+#   OBJECT_STORAGE_KIND: s3
+#   OBJECT_STORAGE_ENDPOINT: https://s3.us-east-1.amazonaws.com
+#   OBJECT_STORAGE_REGION: us-east-1
+#   OBJECT_STORAGE_BUCKET: customer-olakai-documents
+#   OBJECT_STORAGE_ACCESS_KEY: AKIA...
+#   OBJECT_STORAGE_SECRET_KEY: "..."
+#
+# Install only. CA (PEM) that signed the managed PostgreSQL or Redis server
+# certificate, when it is not a public CA. A file on the control node:
+# olakai_private_ca_file: files/rds-ca.pem
