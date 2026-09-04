@@ -31,24 +31,38 @@ olakai_min_memtotal_mb: 7000
 # role's preflight checks a pinned olakai_version before that.
 olakai_rootless_min_bundle_version: "1.5.10"
 
-# .env keys get.sh writes itself (materialize_env). get.sh --env-file
-# refuses them; the preflight refuses them first. Everything else
+# Oldest bundle that reads a managed-state topology from .env on the first
+# bring-up (scripts/lib/state-topology.sh) and ships the private-CA overlay
+# (examples/docker-compose.private-ca.yml). An older bundle starts the
+# bundled PostgreSQL, MinIO and Redis in spite of olakai_env_overrides, with
+# no error, and get.sh refuses --private-ca only after the handshake, when
+# the single-use key is consumed. The preflight checks a pinned
+# olakai_version first, under both runtimes. A pre-release pin of the floor
+# itself (1.5.8-rc1) is older than 1.5.8 and fails; a pre-release of a
+# strictly newer base version (1.5.9-rc1) passes.
+olakai_managed_state_min_bundle_version: "1.5.8"
+
+# .env keys get.sh --env-file refuses: GET_SH_OWNED_ENV_KEYS in get.sh
+# 2026.09.04 (the five keys get.sh derives from its own flags and the
+# license handshake) plus OLAKAI_SKIP_VERIFY and OLAKAI_VERIFY_IMAGES from
+# get.sh 2026.09.04.1 (install.sh sources .env, so a value in the file would
+# bypass how get.sh resolves --skip-verify against --verify-images). The
+# preflight refuses them first, before the key is consumed. The generated
+# secrets (NEXTAUTH_SECRET, AUTH_SECRET, DEFAULT_ENCRYPTION_KEY,
+# NEXT_SERVER_ACTIONS_ENCRYPTION_KEY, ENCRYPTION_SALT, POSTGRES_PASSWORD,
+# MINIO_ROOT_PASSWORD, REDIS_PASSWORD, OLAKAI_SUPPORT_BUNDLE_SECRET) are not
+# in this list on purpose: get.sh does not refuse them, and a restore of a
+# backup into managed PostgreSQL needs the encryption keys of the deployment
+# that made the backup. See README "Managed state". Everything else
 # (DATABASE_URL, REDIS_URL, OBJECT_STORAGE_*, ...) may be overridden.
 olakai_env_keys_owned_by_get_sh:
-  - NEXTAUTH_SECRET
-  - AUTH_SECRET
-  - DEFAULT_ENCRYPTION_KEY
-  - NEXT_SERVER_ACTIONS_ENCRYPTION_KEY
-  - ENCRYPTION_SALT
-  - POSTGRES_PASSWORD
-  - MINIO_ROOT_PASSWORD
-  - REDIS_PASSWORD
-  - OLAKAI_SUPPORT_BUNDLE_SECRET
   - OLAKAI_DOMAIN
   - AUTH_URL
   - OLAKAI_ADMIN_EMAIL
   - OLAKAI_EMAIL_RELAY_KEY
   - OLAKAI_VERSION
+  - OLAKAI_SKIP_VERIFY
+  - OLAKAI_VERIFY_IMAGES
 
 # Standalone Docker Compose v2 binary for Amazon Linux under the docker
 # runtime (no compose plugin in the distro repos). Pinned by version and

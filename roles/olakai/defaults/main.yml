@@ -36,8 +36,10 @@ olakai_print_setup_url: false
 # Bundle version. Empty = latest servable release.
 # install: passes --version=<value> to get.sh when set.
 # upgrade: passes --to=<value> to upgrade.sh, or --to=latest when empty.
-# podman-rootless needs bundle 1.5.10 or later; the preflight refuses an
-# older pin before the license key is consumed.
+# podman-rootless needs bundle 1.5.10 or later; olakai_env_overrides and
+# the private CA need 1.5.8 or later. The preflight refuses an older pin
+# before the license key is consumed (a pre-release pin such as v1.5.8-rc1
+# counts as older than 1.5.8).
 olakai_version: ""
 
 # Container runtime: "auto", "docker" or "podman-rootless".
@@ -96,28 +98,40 @@ olakai_manage_firewall: true
 
 # Install only. .env values merged in before the first bring-up, for
 # managed-state deployments (customer-managed PostgreSQL, Redis, object
-# storage). Maps to get.sh --env-file= (get.sh 2026.09.04 or later): the
-# role writes the dict as KEY=VALUE lines to a root-owned 0600 temporary
-# file next to get.sh, with no_log, and removes it after the run. Keys are
-# upper-case identifiers, values are written verbatim on one line. The keys
-# get.sh writes itself are refused (see olakai_env_keys_owned_by_get_sh in
-# vars/main.yml). Keep credentials in Ansible Vault. Example:
+# storage). Maps to get.sh --env-file= (get.sh 2026.09.04 or later, bundle
+# 1.5.8 or later): the role writes the dict as KEY='VALUE' lines to a
+# root-owned 0600 temporary file next to get.sh, with no_log, and removes
+# it after the run. Keys are upper-case identifiers. Every value must be a
+# string (quote it in YAML, so true or 0600 stays text) and is written
+# single-quoted, on one line, with an embedded ' escaped as '\''; that is
+# the one form install.sh (bash source), compose and the bundle's env reader
+# all read as the same literal. A value with a literal {{ or {% needs
+# !unsafe. The keys get.sh derives from its own flags and the license
+# handshake are refused (olakai_env_keys_owned_by_get_sh in vars/main.yml).
+# The generated secrets (DEFAULT_ENCRYPTION_KEY, ENCRYPTION_SALT, ...) are
+# accepted: supply them only when restoring a backup, see README "Managed
+# state". Keep credentials in Ansible Vault (a !vault value is accepted and
+# decrypted when the file is written). Example:
 #   olakai_env_overrides:
-#     DATABASE_URL: "postgresql://olakai:PASSWORD@db.example.com:5432/olakai?sslmode=verify-full"
-#     REDIS_URL: "rediss://:PASSWORD@cache.example.com:6380"
-#     OBJECT_STORAGE_KIND: s3
-#     OBJECT_STORAGE_ENDPOINT: https://s3.us-east-1.amazonaws.com
-#     OBJECT_STORAGE_REGION: us-east-1
-#     OBJECT_STORAGE_BUCKET: customer-olakai-documents
-#     OBJECT_STORAGE_ACCESS_KEY: AKIA...
-#     OBJECT_STORAGE_SECRET_KEY: "..."
+#     DATABASE_URL: 'postgresql://olakai:PASSWORD@db.example.com:5432/olakai?sslmode=verify-full'
+#     REDIS_URL: 'rediss://:PASSWORD@cache.example.com:6380'
+#     OBJECT_STORAGE_KIND: 's3'
+#     OBJECT_STORAGE_ENDPOINT: 'https://s3.us-east-1.amazonaws.com'
+#     OBJECT_STORAGE_REGION: 'us-east-1'
+#     OBJECT_STORAGE_BUCKET: 'customer-olakai-documents'
+#     OBJECT_STORAGE_ACCESS_KEY: 'AKIA...'
+#     OBJECT_STORAGE_SECRET_KEY: '...'
+#     OBJECT_STORAGE_FORCE_PATH_STYLE: 'true'
 # See README "Managed state".
 olakai_env_overrides: {}
 
 # Install only. Private CA for a managed PostgreSQL or Redis whose server
 # certificate is not signed by a public CA (corporate CAs, Amazon RDS
-# rds-ca-*). PEM text, one or more CERTIFICATE blocks. Maps to get.sh
-# --private-ca= (get.sh 2026.09.04 or later): get.sh copies it to
+# rds-ca-*). PEM text, one or more CERTIFICATE blocks; the
+# -----BEGIN CERTIFICATE----- header must appear within the first 4096
+# bytes (the rule get.sh applies), so a text preamble before the first
+# block is fine. Maps to get.sh --private-ca= (get.sh 2026.09.04 or later,
+# bundle 1.5.8 or later): get.sh copies it to
 # <olakai_install_dir>/certs/private-ca.pem and activates the private-CA
 # compose overlay. Set this or olakai_private_ca_file, not both.
 olakai_private_ca_pem: ""
@@ -129,9 +143,10 @@ olakai_private_ca_file: ""
 # Where to download the installer from. The role needs get.sh 2026.09.03 or
 # later; 2026.09.03.2 or later for podman-rootless; 2026.09.04 or later for
 # olakai_env_overrides and the private CA (see README "Installer
-# compatibility"). Point this at a pre-release copy served over HTTPS (or a
-# file:// path on the target) to review the role before get.olakai.ai serves
-# that version.
+# compatibility"). get.olakai.ai serves 2026.09.04, so the default meets
+# every floor. Point this at a pre-release copy served over HTTPS (or a
+# file:// path on the target) to review the role against a newer get.sh
+# before get.olakai.ai serves it.
 olakai_get_sh_url: https://get.olakai.ai/get.sh
 
 # SHA256 of get.sh. Empty = do not pin. get.sh is fetched over HTTPS and is

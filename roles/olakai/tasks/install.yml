@@ -18,10 +18,13 @@
 # its output is written to Ansible logs. The OLAKAI_SETUP_URL line carries a
 # one-time admin bootstrap token; it goes to a 0600 file on the host, not to
 # the job log, unless olakai_print_setup_url is true. The URL is never stored
-# in a fact: set_fact values can be persisted by a fact cache (jsonfile,
-# redis, AWX) even with no_log, so the copy task reads the registered stdout
-# directly. The redacted stderr tail is the only intermediate fact and it is
-# cleared at the end.
+# in a fact: the copy task reads the registered stdout directly. A fact cache
+# (jsonfile, redis, AWX) stores set_fact values only with cacheable: true,
+# which the role never sets, so this is defense in depth: a fact holding the
+# URL would outlive the play through a later `cacheable`, a callback plugin
+# that dumps host vars, or a debug of hostvars. The redacted stderr tail is
+# the only intermediate fact and it is cleared whether get.sh succeeded or
+# failed.
 #
 # --env-file / --private-ca (get.sh 2026.09.04 or later): both files are
 # written into the same root-only temporary directory as get.sh and removed
@@ -82,12 +85,6 @@
     # belong to the service user. Under Docker everything is root's.
     olakai_install_owner: >-
       {{ olakai_service_user if olakai_runtime_resolved == 'podman-rootless' else 'root' }}
-    # How to read the bootstrap log on the host: as root under Docker, as the
-    # service user under rootless Podman (root has no containers there).
-    olakai_compose_logs_hint: >-
-      cd {{ olakai_install_dir }} &&
-      {{ 'sudo runuser -u ' ~ olakai_service_user ~ ' -- ' if olakai_runtime_resolved == 'podman-rootless' else 'sudo ' -}}
-      docker compose logs bootstrap | grep "Setup URL"
   when: not olakai_env_stat.stat.exists
 
 - name: Report check mode
@@ -116,14 +113,22 @@
         mode: "0700"
         force: true
 
-    # KEY=VALUE, one per line, values verbatim (no quoting), the format
-    # get.sh merges into .env. Written by root (the play's become), mode
-    # 0600, inside the root-only 0700 directory.
+    # KEY='VALUE', one per line, the format get.sh merges into .env. Every
+    # value is single-quoted. .env is read three ways: install.sh sources it
+    # with bash, compose interpolates it, and the bundle's env reader parses
+    # it back. A single-quoted value is identical for all three when it
+    # contains $, whitespace, a backtick or ` #` (an unquoted pa$w0rd sources
+    # as "pa"). A value with a ' has no form all three accept (bash's '\''
+    # makes compose reject the whole .env: "unexpected character \ in
+    # variable name"), so the preflight refuses it. The preflight also
+    # checked that every value is a string; a vaulted value decrypts here.
+    # Written by root (the play's become), mode 0600, inside the root-only
+    # 0700 directory.
     - name: Write the .env overrides file for get.sh --env-file
       ansible.builtin.copy:
         content: |
           {% for key in olakai_env_overrides.keys() | sort -%}
-          {{ key }}={{ olakai_env_overrides[key] }}
+          {{ key }}='{{ olakai_env_overrides[key] | string }}'
           {% endfor %}
         dest: "{{ olakai_get_sh_tmpdir.path }}/env-overrides"
         mode: "0600"
@@ -132,9 +137,12 @@
 
     # A CA certificate is public. get.sh copies it to
     # <install_dir>/certs/private-ca.pem and activates the private-CA overlay.
+    # The file lookup strips the trailing newline of olakai_private_ca_file;
+    # it is put back so the last -----END CERTIFICATE----- line is complete
+    # and nothing concatenated after the file glues to it.
     - name: Write the private CA file for get.sh --private-ca
       ansible.builtin.copy:
-        content: "{{ olakai_private_ca_content }}"
+        content: "{{ olakai_private_ca_content | trim }}\n"
         dest: "{{ olakai_get_sh_tmpdir.path }}/private-ca.pem"
         mode: "0644"
       when: olakai_private_ca_content | length > 0
@@ -192,17 +200,30 @@
 - name: Handle the installer result
   when: olakai_install_ran | bool
   block:
-    # stderr may echo the license key (for example in a failed relay call), so
-    # the tail is redacted before any task prints it. The empty-key guard
-    # matters: str.replace('', x) would insert x between every character.
+    # stderr may echo the license key (for example in a failed relay call)
+    # and the bundle's preflight may echo a managed-state value (a DATABASE_URL
+    # with its password, on a connection failure), so the tail is redacted
+    # before any task prints it: the license key and every value of
+    # olakai_env_overrides of 8 characters or more are replaced, longest
+    # first so a value that contains another one is covered whole. A
+    # shorter value (s3, us-east-1's kind, a port) is not a secret and would
+    # shred the tail ("s3.amazonaws.com" -> "[redacted].amazonaws.com").
+    # Empty strings are dropped: str.replace('', x) would insert x between
+    # every character.
     # The two booleans describe the OLAKAI_SETUP_URL= line without storing
     # the URL: get.sh 2026.09.03+ always prints the line, and prints it empty
     # when the URL could not be read within 30 s or --quiet was passed.
     - name: Extract a redacted error tail and the setup URL line status
       ansible.builtin.set_fact:
         olakai_install_error_tail: >-
-          {%- set tail = (olakai_install_result.stderr_lines | default([]))[-15:] | join('\n') -%}
-          {{ tail | replace(olakai_license_key, '[redacted]') if olakai_license_key | length > 0 else tail }}
+          {%- set ns = namespace(tail=(olakai_install_result.stderr_lines | default([]))[-15:] | join('\n')) -%}
+          {%- set values = olakai_env_overrides.values() | map('string') | select | list -%}
+          {%- set long_values = values | map('length') | zip(values) | selectattr(0, '>=', 8) | map(attribute=1) | list -%}
+          {%- set secrets = ([olakai_license_key] | select | list) + long_values -%}
+          {%- for pair in secrets | map('length') | zip(secrets) | sort(reverse=true) -%}
+          {%- set ns.tail = ns.tail | replace(pair[1], '[redacted]') -%}
+          {%- endfor -%}
+          {{ ns.tail }}
         olakai_setup_url_line_present: >-
           {{ (olakai_install_result.stdout | default('')) is search('^OLAKAI_SETUP_URL=', multiline=True) }}
         olakai_setup_url_present: >-
@@ -230,6 +251,38 @@
           - "{{ olakai_install_error_tail }}"
           - "Partial state, if any, is preserved in {{ olakai_install_dir }}. Fix the cause and re-run."
       when: olakai_install_result.rc | default(0) != 0
+
+    # get.sh created the service user, so its uid is known now. The hints
+    # below print the full command form for later bundle scripts: runuser
+    # sets HOME but not XDG_RUNTIME_DIR or the D-Bus address, which
+    # `systemctl --user` and the Podman socket lookup key on.
+    - name: Resolve the service user's uid for the command hints (podman-rootless)
+      ansible.builtin.getent:
+        database: passwd
+        key: "{{ olakai_service_user }}"
+        fail_key: false
+      when: olakai_runtime_resolved == 'podman-rootless'
+
+    # How to run a bundle script or `docker compose` on the host: as root
+    # under Docker, as the service user with its runtime directory under
+    # rootless Podman (root has no containers there). $(id -u <user>) is the
+    # fallback when getent could not resolve the uid.
+    - name: Build the command hints
+      ansible.builtin.set_fact:
+        olakai_script_prefix: >-
+          {%- if olakai_runtime_resolved == 'podman-rootless' -%}
+          {%- set entry = ansible_facts.getent_passwd[olakai_service_user] | default(none, true) -%}
+          {%- set uid = entry[1] if entry else '$(id -u ' ~ olakai_service_user ~ ')' -%}
+          sudo runuser -u {{ olakai_service_user }} -- env XDG_RUNTIME_DIR=/run/user/{{ uid }}
+          DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/{{ uid }}/bus
+          {%- else -%}
+          sudo
+          {%- endif -%}
+
+    - name: Build the compose logs hint
+      ansible.builtin.set_fact:
+        olakai_compose_logs_hint: >-
+          cd {{ olakai_install_dir }} && {{ olakai_script_prefix }} docker compose logs bootstrap | grep "Setup URL"
 
     # The URL is a one-time admin bootstrap token. It lives on the host, readable
     # by its owner only (0600, so the group does not matter and is left to the
@@ -260,9 +313,10 @@
             The URL is not printed here because it is a one-time admin token and this
             output is kept in the job log. Set olakai_print_setup_url: true to print it anyway.
           - >-
-            {{ ('Rootless Podman: the stack belongs to ' ~ olakai_service_user ~ '. Run every later bundle script as that user: '
-                ~ 'cd ' ~ olakai_install_dir ~ ' && sudo runuser -u ' ~ olakai_service_user ~ ' -- ./upgrade.sh --to=X.Y.Z '
-                ~ '(upgrade.yml does this for you).')
+            {{ ('Rootless Podman: the stack belongs to ' ~ olakai_service_user ~ '. Run every later bundle script as that user, '
+                ~ 'with its runtime directory and D-Bus address: '
+                ~ 'cd ' ~ olakai_install_dir ~ ' && ' ~ olakai_script_prefix ~ ' ./upgrade.sh --to=X.Y.Z '
+                ~ '(upgrade.yml does this for you, with PATH set for the compose provider in /usr/local/bin).')
                if olakai_runtime_resolved == 'podman-rootless' else 'Runtime: docker.' }}
       when: olakai_setup_url_present | bool
 
@@ -305,9 +359,10 @@
       when:
         - olakai_setup_url_line_present | bool
         - not olakai_setup_url_present | bool
-
+  always:
     # The tail is redacted, but it is still installer stderr. Do not leave it
-    # in host vars where a fact cache could persist it.
+    # in host vars after the play, on the failure path (the fail tasks above
+    # end the block, and always: still runs) as much as on success.
     - name: Clear the redacted error tail
       ansible.builtin.set_fact:
         olakai_install_error_tail: ""
