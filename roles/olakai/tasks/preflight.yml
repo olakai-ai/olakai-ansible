@@ -132,22 +132,30 @@
 # bundle version, so a too-old pin burns the key. The role checks the pin
 # first. 1.5.9 introduced the Podman overlay but ships a support-bundle
 # sidecar defect under rootless Podman; 1.5.10 is the floor get.sh enforces.
+# Same pre-release rule as the managed-state floor below: v1.5.10-rc1 is
+# older than 1.5.10 and fails; a pre-release of a strictly newer base passes.
 - name: Assert the pinned bundle version supports rootless Podman
   ansible.builtin.assert:
     that:
       - >-
-        (olakai_version | regex_replace('^v', ''))
-        is version(olakai_rootless_min_bundle_version, '>=')
+        olakai_version_base is version(olakai_rootless_min_bundle_version, '>')
+        or (olakai_version_base is version(olakai_rootless_min_bundle_version, '==')
+            and not (olakai_version_prerelease | bool))
     fail_msg: >-
       olakai_version is '{{ olakai_version }}' but olakai_runtime
       podman-rootless needs bundle {{ olakai_rootless_min_bundle_version }}
       or later (1.5.9 has a support-bundle sidecar defect under rootless
-      Podman; earlier bundles have no Podman support). Leave olakai_version
+      Podman; earlier bundles have no Podman support; a pre-release of
+      {{ olakai_rootless_min_bundle_version }} is older than
+      {{ olakai_rootless_min_bundle_version }}). Leave olakai_version
       empty for the latest release, or pin v{{ olakai_rootless_min_bundle_version }}
       or later.
+  vars:
+    olakai_version_base: "{{ olakai_version | regex_replace('^v', '') | regex_replace('[-+].*$', '') }}"
+    olakai_version_prerelease: "{{ (olakai_version | regex_replace('^v', '')) is search('-') }}"
   when:
     - olakai_runtime_resolved == 'podman-rootless'
-    - (olakai_version | regex_replace('^v', '')) is match('^[0-9]+\.[0-9]+')
+    - olakai_version_base is match('^[0-9]+\.[0-9]+')
 
 - name: Assert required inputs are set
   ansible.builtin.assert:
@@ -170,22 +178,80 @@
   when: olakai_action == 'install'
 
 # --env-file: get.sh merges the file into .env before the first bring-up and
-# refuses the keys it writes itself. The role checks the same list first so
-# the run fails before the license key is consumed.
-- name: Assert olakai_env_overrides is well formed (install only)
+# refuses the keys it derives from its own flags and the license handshake
+# (olakai_env_keys_owned_by_get_sh in vars/main.yml; the generated secrets
+# are not among them). The role checks the same list first so the run fails
+# before the license key is consumed.
+- name: Assert olakai_env_overrides is a dict (install only)
   ansible.builtin.assert:
     that:
       - olakai_env_overrides is mapping
+    fail_msg: >-
+      olakai_env_overrides must be a dict of KEY: value (got
+      {{ olakai_env_overrides | type_debug }}).
+    quiet: true
+  when: olakai_action == 'install'
+
+# The values are written single-quoted into the env file, so each one must
+# be a string. YAML turns an unquoted true, 1 or 1.5 into a boolean or a
+# number, and the template would then write Python's spelling (True, not
+# true). A vaulted value is accepted: it decrypts to a string when the file
+# is written (on ansible-core 2.15 it is an AnsibleVaultEncryptedUnicode,
+# which the string test does not match; on 2.19 it is a plain str).
+- name: Assert every olakai_env_overrides value is a string (install only)
+  ansible.builtin.assert:
+    that:
+      - olakai_env_non_string_keys | length == 0
+    fail_msg: >-
+      olakai_env_overrides values must be strings. Quote the value in YAML
+      (OBJECT_STORAGE_FORCE_PATH_STYLE: 'true', not true) so YAML keeps it a
+      string. Offending keys: {{ olakai_env_non_string_keys | join(', ') }}.
+    quiet: true
+  vars:
+    olakai_env_non_string_keys: >-
+      {{ olakai_env_overrides | dict2items
+         | rejectattr('value', 'string')
+         | rejectattr('value', 'vault_encrypted')
+         | map(attribute='key') | list }}
+  when: olakai_action == 'install'
+
+- name: Assert olakai_env_overrides is well formed (install only)
+  ansible.builtin.assert:
+    that:
       - olakai_env_overrides.keys() | reject('match', '^[A-Z][A-Z0-9_]*$') | list | length == 0
       - olakai_env_overrides.keys() | list | intersect(olakai_env_keys_owned_by_get_sh) | length == 0
       - olakai_env_overrides.values() | map('string') | select('search', '[\r\n]') | list | length == 0
     fail_msg: >-
       olakai_env_overrides must be a dict of KEY: value. Keys are upper-case
       identifiers (A-Z, 0-9, _), values are single lines, and the keys get.sh
-      writes itself are refused: {{ olakai_env_keys_owned_by_get_sh | join(', ') }}.
+      derives from its own flags and the license handshake are refused:
+      {{ olakai_env_keys_owned_by_get_sh | join(', ') }}.
       Offending keys: {{ (olakai_env_overrides.keys() | reject('match', '^[A-Z][A-Z0-9_]*$') | list
         + (olakai_env_overrides.keys() | list | intersect(olakai_env_keys_owned_by_get_sh))) | join(', ') }}.
     quiet: true
+  when: olakai_action == 'install'
+
+# The role writes every value single-quoted. There is no encoding of a
+# single quote that the three readers of .env accept: bash's '\'' makes
+# Docker Compose reject the whole file ("unexpected character \ in
+# variable name"), after the license key is consumed, and the bundle's
+# olakai_read_env_var reads it wrong. Refused here, before anything runs.
+- name: Assert no olakai_env_overrides value contains a single quote (install only)
+  ansible.builtin.assert:
+    that:
+      - olakai_env_quoted_keys | length == 0
+    fail_msg: >-
+      olakai_env_overrides values must not contain a single quote ('): there
+      is no form of it that install.sh (bash), Docker Compose and the
+      bundle's env reader all accept in .env today. Rotate the credential,
+      or percent-encode the quote as %27 inside DATABASE_URL / REDIS_URL.
+      Offending keys: {{ olakai_env_quoted_keys | join(', ') }}.
+    quiet: true
+  vars:
+    olakai_env_quoted_keys: >-
+      {{ olakai_env_overrides | dict2items
+         | selectattr('value', 'search', "'")
+         | map(attribute='key') | list }}
   when: olakai_action == 'install'
 
 - name: Assert at most one private CA source is set (install only)
@@ -204,18 +270,58 @@
          else (lookup('ansible.builtin.file', olakai_private_ca_file) if olakai_private_ca_file | length > 0 else '') }}
   when: olakai_action == 'install'
 
+# Same rule as check_private_ca in get.sh 2026.09.04.1: the header must
+# appear within the first 4096 bytes. A file whose first line is exactly
+# -----BEGIN CERTIFICATE----- passes, and so does one with a text preamble
+# before the first block (an `openssl x509 -text` dump, PKCS#12 bag
+# attributes). PEM is ASCII, so 4096 characters here are 4096 bytes there.
 - name: Assert the private CA is PEM (install only)
   ansible.builtin.assert:
     that:
-      - olakai_private_ca_content is search('-----BEGIN CERTIFICATE-----')
+      - olakai_private_ca_content[:4096] is search('-----BEGIN CERTIFICATE-----')
       - olakai_private_ca_content is search('-----END CERTIFICATE-----')
     fail_msg: >-
-      The private CA must be one or more PEM certificates
-      (-----BEGIN CERTIFICATE----- blocks). DER, PKCS#7 and PKCS#12 are not
-      accepted; convert with openssl first.
+      The private CA must be one or more PEM certificates: a
+      -----BEGIN CERTIFICATE----- header within the first 4096 bytes and a
+      matching -----END CERTIFICATE----- line. DER, PKCS#7 and PKCS#12 are
+      not accepted; convert with openssl first
+      (openssl x509 -inform der -in ca.crt -out ca.pem).
   when:
     - olakai_action == 'install'
     - olakai_private_ca_content | length > 0
+
+# --env-file and --private-ca need bundle 1.5.8 or later, under both
+# runtimes. An older bundle has no state-topology detection (its install.sh
+# starts the bundled PostgreSQL, MinIO and Redis in spite of the overrides,
+# with no error) and no private-CA overlay (get.sh refuses --private-ca only
+# after the handshake, when the single-use key is consumed). The role checks
+# a pinned olakai_version first. A pre-release is older than its base
+# version, so v1.5.8-rc1 fails the 1.5.8 floor and v1.5.9-rc1 passes it:
+# the base must be strictly newer for a pre-release suffix to pass.
+- name: Assert the pinned bundle version supports olakai_env_overrides and the private CA (install only)
+  ansible.builtin.assert:
+    that:
+      - >-
+        olakai_version_base is version(olakai_managed_state_min_bundle_version, '>')
+        or (olakai_version_base is version(olakai_managed_state_min_bundle_version, '==')
+            and not (olakai_version_prerelease | bool))
+    fail_msg: >-
+      olakai_version is '{{ olakai_version }}' but olakai_env_overrides and
+      the private CA need bundle {{ olakai_managed_state_min_bundle_version }}
+      or later (state-topology detection and the private-CA overlay first
+      shipped there; a pre-release of {{ olakai_managed_state_min_bundle_version }}
+      is older than {{ olakai_managed_state_min_bundle_version }}). An older
+      bundle would start the bundled stateful containers in spite of the
+      overrides, and --private-ca would burn the single-use license key.
+      Leave olakai_version empty for the latest release, or pin
+      v{{ olakai_managed_state_min_bundle_version }} or later.
+  vars:
+    olakai_version_base: "{{ olakai_version | regex_replace('^v', '') | regex_replace('[-+].*$', '') }}"
+    olakai_version_prerelease: "{{ (olakai_version | regex_replace('^v', '')) is search('-') }}"
+  when:
+    - olakai_action == 'install'
+    - olakai_env_overrides | length > 0 or olakai_private_ca_content | length > 0
+    - olakai_version_base is match('^[0-9]+\.[0-9]+')
 
 - name: Show the resolved plan
   ansible.builtin.debug:

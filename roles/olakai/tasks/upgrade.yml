@@ -17,9 +17,14 @@
 # The bundle refuses a root-run upgrade of a rootless deployment. Ansible
 # becomes the service user directly and passes XDG_RUNTIME_DIR and the D-Bus
 # address, which `systemctl --user` and the Podman socket lookup key on and
-# which a become shell does not set. Becoming an unprivileged user needs
-# Ansible's temporary-file hand-over (setfacl, present on the RHEL family)
-# or pipelining; see README "Upgrades".
+# which a become shell does not set. PATH is set explicitly under both
+# runtimes: sudo on the RHEL family resets PATH to secure_path, which lacks
+# /usr/local/bin, where get.sh installed the docker-compose provider under
+# rootless Podman (get.sh passes PATH to runuser for the same reason).
+# Becoming an unprivileged user needs the sudoers policy to allow
+# `sudo -u <service user>` from the connection user, and Ansible's
+# temporary-file hand-over (setfacl, present on the RHEL family) or
+# pipelining; see README "Upgrades" and the ansible.cfg in this repository.
 
 - name: Check for an existing install (.env)
   ansible.builtin.stat:
@@ -82,20 +87,25 @@
       {{ olakai_service_user if olakai_runtime_resolved == 'podman-rootless' else 'root' }}
     # getent_passwd[user] is [password, uid, gid, gecos, home, shell].
     olakai_upgrade_env: >-
+      {%- set base = {'PATH': '/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin'} -%}
       {%- if olakai_runtime_resolved == 'podman-rootless' -%}
         {%- set uid = ansible_facts.getent_passwd[olakai_service_user][1] -%}
-        {{ {'XDG_RUNTIME_DIR': '/run/user/' ~ uid,
-            'DBUS_SESSION_BUS_ADDRESS': 'unix:path=/run/user/' ~ uid ~ '/bus'} }}
+        {{ base | combine({'XDG_RUNTIME_DIR': '/run/user/' ~ uid,
+                           'DBUS_SESSION_BUS_ADDRESS': 'unix:path=/run/user/' ~ uid ~ '/bus'}) }}
       {%- else -%}
-        {{ {} }}
+        {{ base }}
       {%- endif -%}
 
+# The full form, environment included, so the line can be pasted on the host
+# as it is (a plain `sudo runuser -u <user> -- ./upgrade.sh` leaves
+# XDG_RUNTIME_DIR unset and the Podman socket lookup fails).
 - name: Show how upgrade.sh will run
   ansible.builtin.debug:
     msg: >-
       {{ 'cd ' ~ olakai_install_dir ~ ' && '
          ~ ('sudo runuser -u ' ~ olakai_upgrade_user ~ ' -- ' if olakai_upgrade_user != 'root' else 'sudo ')
-         ~ './upgrade.sh ' ~ (olakai_upgrade_sh_args | join(' ')) }}
+         ~ 'env ' ~ (olakai_upgrade_env.keys() | zip(olakai_upgrade_env.values()) | map('join', '=') | join(' '))
+         ~ ' ./upgrade.sh ' ~ (olakai_upgrade_sh_args | join(' ')) }}
 
 # No secret is involved here: upgrade.sh reads the deployment bearer from
 # .env itself and does not echo it, so its output can be shown.
